@@ -1,0 +1,497 @@
+{
+  "version": 1,
+  "items": {
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|15|18|function_definition|__init__|2592213cfa33749da24a3ad95bc93e5b48fd68ef": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|42|46|function_definition|make_key|e390d882cf9706a9527452a76f2da14ebbd91553": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|48|60|function_definition|try_apply|e154fd79f52937de9a028b6c4c456db2d400a4dd": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|62|71|function_definition|upsert|3ccc67bb093bebb1966d9454388b479cb7bf2ed3": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|73|75|function_definition|prune_to|d3db47b0756cc32c3193fcbcaa161d399cc24634": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\models.py|20|25|class_definition|BlockFeatures|5ed9871e6bf43f4f4caea2f9d737e51cb5bc5471": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\models.py|29|50|class_definition|CodeBlock|ee8ab38498729e9edd61cb6794a057e33afda0a3": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\models.py|47|50|function_definition|short_name|34c23224a7e47e942da700b1cfbcebaa883a06b8": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\models.py|54|66|class_definition|ProjectAnalysis|01083038d3124370ce5afc6c0c9d3446bb69c019": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\models.py|61|66|function_definition|complexity_counts|c9c869e05fe61e6b956e2684e05e770b93c96b2d": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|12|112|class_definition|OllamaBigOClient|e9988ea32218342a500cc4a0aff4a0f092ce71dc": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 2,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|13|23|function_definition|__init__|9bf19d37d10178c1d59baf2152c080970021242c": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|25|30|function_definition|is_available|22c2bf502a89dcb49c219d7273f25db4906695c5": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|96|112|function_definition|analyze_many|c18219fb187505a0ffddc6ce86dc65de68670bc8": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 2,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|17|128|class_definition|BigOOrchestrator|eb86fc789e61244ac848b7fc2bf3d8bd3d0c3796": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 3,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|22|27|function_definition|__init__|ff3afb3037286094b9b98e50181e746973ed3f89": {
+      "complexity": "O(n)",
+      "reason": "Одиночная линейная рекурсия.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 1
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|29|30|function_definition|is_running|41ef029be16b50b605d4bc3213421ad630de3d77": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|32|34|function_definition|cancel|a85a30c160fd04191374d11153f3467bcdeede86": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|36|45|function_definition|start|b03674ab682e22514ad09a0bcba2fb81c32b7f89": {
+      "complexity": "O(n)",
+      "reason": "Одиночная линейная рекурсия.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 1
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|47|48|function_definition|_should_stop|33a030581352f8820a3eaddccad433c0db7adc9b": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\orchestrator.py|50|128|function_definition|_run|c1a25824cd0a84992f03ca98a68ecdbe0131753a": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 3,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\overlay_model.py|6|13|function_definition|complexity_color_class|70747687e3da128ee89d65b8737f5476b1e29e2f": {
+      "complexity": "O(1)",
+      "reason": "Нет циклов, рекурсии и log/sort паттернов.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\overlay_model.py|16|30|function_definition|to_monaco_decorations|7feeba5a15627f7acfbfc62da682ac86d841c7aa": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|64|72|function_definition|_iter_source_files|ff1e85114b4bec085b20c5c3ebd5f1a30c33ee14": {
+      "complexity": "O(n^2)",
+      "reason": "Два вложенных цикла.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 2,
+        "max_loop_depth": 2,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|75|78|function_definition|_walk|2ef7aa1a0e893dafdd01d8de8264999f11754906": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 1
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|93|112|function_definition|_extract_calls|81ca96cdbf14b638d01d25da858ca0ce4756b040": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 2,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|115|130|function_definition|_loop_metrics|e817274d298f6c52e5ea3d0b13ca54920e0fcbf7": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|118|127|function_definition|walk|7122d3fb8160dec0c47772b3758dc07b889e674c": {
+      "complexity": "O(n)",
+      "reason": "Один линейный цикл.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 1
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|133|144|function_definition|_build_features|73638fbfed16d59771aa980cb17849ab6a3e6ec4": {
+      "complexity": "O(log n)",
+      "reason": "Обнаружен логарифмический паттерн (деление диапазона).",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": true,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|147|221|function_definition|build_index|611764be7f4188f3043032753ced1d43cc5ace37": {
+      "complexity": "O(n^3)",
+      "reason": "Вложенность циклов: 3.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 7,
+        "max_loop_depth": 3,
+        "has_log_pattern": false,
+        "has_sort_call": true,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\review.py|9|29|function_definition|_fallback_review|828c6c68e2b1228c3053b7b17f802ecefc2f6442": {
+      "complexity": "O(n log n)",
+      "reason": "Один цикл + log/sort паттерн.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 3,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": true,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\review.py|32|87|function_definition|build_project_review|f201e5237dcbc76b6eaca7245af00ed8823de260": {
+      "complexity": "O(n log n)",
+      "reason": "Один цикл + log/sort паттерн.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 1,
+        "max_loop_depth": 1,
+        "has_log_pattern": false,
+        "has_sort_call": true,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|10|75|class_definition|BlockComplexityCache|d3bc8992dd46e9bf90bd42e0026545c5ab441fc4": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|20|33|function_definition|_load|60aaac5d44155b14c9be117e54f47c40eec1d4b2": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\cache.py|35|39|function_definition|save|76f5591c29ec026889fd57ea41b50f1d86f4af5d": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|32|48|function_definition|_prompt_for_block|401e9e94ae805626f9bef7ed3938750b00bfcb27": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|51|68|function_definition|_normalize_complexity|4170614a5e9900ee30c6fd9f22211fdc5f608594": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\ollama_client.py|70|94|function_definition|_query_one|9cf59bcfdf0f92682f9f931534a92975eff6209a": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|60|61|function_definition|_sha1|f514583848d1428403fb0e24e32b970d88add4d7": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\project_index.py|81|90|function_definition|_best_name|4d02437a7f13020af56dec1b38dc2ec68bad4f8d": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    },
+    "P:/Projects/senior_thesis_arch/code_editor/bigo\\static_analyzer.py|8|47|function_definition|analyze_block_static|0aaf1d60544b5cef22bccacafa158cb58764a55f": {
+      "complexity": "O(n)",
+      "reason": "Эвристика: случай вне правил, без ИИ fallback.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "has_log_pattern": false,
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    }
+  }
+}

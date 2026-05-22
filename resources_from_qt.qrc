@@ -1,0 +1,52 @@
+<RCC>
+  <qresource prefix="Icons">
+    <file>icons/right_support.png</file>
+    <file>icons/left_support.png</file>
+    <file>icons/activity_zone.png</file>
+    <file>icons/ai_ricense_block.png</file>
+    <file>icons/all_files_show.png</file>
+    <file>icons/arrow_left.png</file>
+    <file>icons/arrow_right.png</file>
+    <file>icons/blocks_rating.png</file>
+    <file>icons/close.png</file>
+    <file>icons/dark_mode.png</file>
+    <file>icons/design_services.png</file>
+    <file>icons/diagonal_line.png</file>
+    <file>icons/diagram.png</file>
+    <file>icons/exit.png</file>
+    <file>icons/file_open.png</file>
+    <file>icons/folder.png</file>
+    <file>icons/folder_open.png</file>
+    <file>icons/light_mode.png</file>
+    <file>icons/maximize.png</file>
+    <file>icons/menu.png</file>
+    <file>icons/minimize.png</file>
+    <file>icons/report.png</file>
+    <file>icons/minus.png</file>
+    <file>icons/plus.png</file>
+    <file>icons/restore.png</file>
+    <file>icons/save.png</file>
+    <file>icons/settings.png</file>
+    <file>icons/side_ai.png</file>
+    <file>icons/side_tree.png</file>
+    <file>icons/table.png</file>
+    <file>icons/tree_arrow_down.png</file>
+    <file>icons/tree_arrow_right.png</file>
+    <file>icons/tree_code.png</file>
+    <file>icons/tree_data_object.png</file>
+    <file>icons/tree_db.png</file>
+    <file>icons/tree_ico.png</file>
+    <file>icons/tree_image.png</file>
+    <file>icons/tree_terminal.png</file>
+    <file>icons/tree_wifi.png</file>
+  </qresource>
+  <qresource prefix="App_Icon">
+    <file>icon.ico</file>
+  </qresource>
+  <qresource prefix="Images">
+    <file>images/logo.png</file>
+    <file>images/logo_medium.png</file>
+    <file>images/logo_small.png</file>
+    <file>images/empty_logo.png</file>
+  </qresource>
+</RCC>
