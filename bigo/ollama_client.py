@@ -3,10 +3,34 @@ from __future__ import annotations
 import concurrent.futures
 import json
 from dataclasses import asdict
+from typing import Any
 
 import requests
 
+from .llm_contract import SYSTEM_INSTRUCTIONS
 from .models import BIG_O_CLASSES, CodeBlock
+
+
+def normalize_complexity(raw: str) -> str:
+    t = (raw or "").strip()
+    if t in BIG_O_CLASSES:
+        return t
+    if t == "unknown":
+        return "unknown"
+    low = t.lower().replace(" ", "")
+    mapping = {
+        "o(1)": "O(1)",
+        "o(logn)": "O(log n)",
+        "o(n)": "O(n)",
+        "o(nlogn)": "O(n log n)",
+        "o(n^2)": "O(n^2)",
+        "o(n²)": "O(n^2)",
+        "o(n^2logn)": "O(n^2 log n)",
+        "o(n^3)": "O(n^3)",
+        "o(2^n)": "O(2^n)",
+        "o(n!)": "O(n!)",
+    }
+    return mapping.get(low, "O(n)")
 
 
 class OllamaBigOClient:
@@ -29,7 +53,42 @@ class OllamaBigOClient:
         except Exception:
             return False
 
+    def _extract_telemetry(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "total_duration": data.get("total_duration"),
+            "load_duration": data.get("load_duration"),
+            "prompt_eval_count": data.get("prompt_eval_count"),
+            "eval_count": data.get("eval_count"),
+        }
+
+    def chat_big_o_estimate(self, user_payload: dict) -> tuple[dict[str, Any], dict[str, Any]]:
+        """POST /api/chat — компактный JSON-IR блока, ответ JSON по контракту."""
+        url = f"{self.base_url}/api/chat"
+        body = {
+            "model": self.model,
+            "stream": False,
+            "format": "json",
+            "messages": [
+                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                {
+                    "role": "user",
+                    "content": json.dumps(user_payload, ensure_ascii=False, indent=2),
+                },
+            ],
+            "options": {"temperature": 0.0},
+        }
+        resp = requests.post(url, json=body, timeout=self.timeout_s)
+        resp.raise_for_status()
+        data = resp.json()
+        message = data.get("message") or {}
+        content = (message.get("content") or "").strip()
+        telemetry = self._extract_telemetry(data)
+        from .llm_contract import extract_json_object
+
+        return extract_json_object(content), telemetry
+
     def _prompt_for_block(self, block: CodeBlock) -> str:
+        """Legacy prompt для analyze_many / review."""
         return (
             "Ты статический ассистент по оценке алгоритмической сложности.\n"
             "Выбери ТОЛЬКО один класс Big-O из списка:\n"
@@ -46,26 +105,6 @@ class OllamaBigOClient:
             f"{block.source}"
             "```\n"
         )
-
-    @staticmethod
-    def _normalize_complexity(raw: str) -> str:
-        t = (raw or "").strip()
-        if t in BIG_O_CLASSES:
-            return t
-        # Небольшая нормализация частых вариаций.
-        low = t.lower().replace(" ", "")
-        mapping = {
-            "o(1)": "O(1)",
-            "o(logn)": "O(log n)",
-            "o(n)": "O(n)",
-            "o(nlogn)": "O(n log n)",
-            "o(n^2)": "O(n^2)",
-            "o(n²)": "O(n^2)",
-            "o(n^3)": "O(n^3)",
-            "o(2^n)": "O(2^n)",
-            "o(n!)": "O(n!)",
-        }
-        return mapping.get(low, "O(n)")
 
     def _query_one(self, block: CodeBlock) -> tuple[str, str]:
         prompt = self._prompt_for_block(block)
@@ -85,12 +124,11 @@ class OllamaBigOClient:
             return "O(n)", "Пустой ответ Ollama, fallback на O(n)."
         try:
             row = json.loads(txt)
-            comp = self._normalize_complexity(str(row.get("complexity", "")))
+            comp = normalize_complexity(str(row.get("complexity", "")))
             reason = str(row.get("reason", "")).strip() or "Оценка от Ollama."
             return comp, reason
         except json.JSONDecodeError:
-            # Иногда модель отвечает plain text.
-            comp = self._normalize_complexity(txt.splitlines()[0])
+            comp = normalize_complexity(txt.splitlines()[0])
             return comp, "Оценка от Ollama (plain text)."
 
     def analyze_many(self, blocks: list[CodeBlock]) -> dict[str, tuple[str, str]]:
@@ -110,4 +148,3 @@ class OllamaBigOClient:
                 except Exception as exc:  # noqa: BLE001
                     out[bid] = ("O(n)", f"Ошибка Ollama: {exc}")
         return out
-

@@ -6,15 +6,18 @@ from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFrame,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QTextEdit,
@@ -22,8 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from bottom_status import LINE_COL_PLACEHOLDER, language_label_for_monaco_id
-from bigo.orchestrator import BigOOrchestrator
-from bigo.overlay_model import to_monaco_decorations
+from bigo_controller import BigOController
 from editor_navigation import EditorNavigation
 from editor_theme import ONE_DARK_PRO_THEME, ONE_DARK_PRO_THEME_NAME
 from file_tree import DARK_MENU_STYLE, Sidebar
@@ -72,7 +74,7 @@ class MainWindow(QMainWindow):
         self._setup_bigo_ui()
         self._setup_sidebar()
         self._setup_tabs()
-        self._setup_bigo_orchestrator()
+        self._setup_bigo_controller()
         self._setup_navigation()
         self._setup_file_menu()
         self._setup_shortcuts()
@@ -146,15 +148,10 @@ class MainWindow(QMainWindow):
         self.ui.showAllFilesBtn.clicked.connect(
             lambda: self.tab_manager.show_all_files_menu(self.ui.showAllFilesBtn)
         )
-        self.tab_manager.active_tab_changed.connect(self._on_active_tab_changed_for_bigo)
+        # Big-O: подсветка при смене вкладки (контроллер создаётся позже в __init__).
 
     def _setup_bigo_ui(self):
-        """Кнопка Big-O + правый AI sidebar (рецензия и прогресс)."""
-        self._bigo_enabled = False
-        self._bigo_rows_by_file: dict[str, list[dict]] = {}
-        self._bigo_analysis_running = False
-        self._bigo_spinner_step = 0
-
+        """Кнопка Big-O + правый AI sidebar (виджеты; логика — в BigOController)."""
         # Кнопка в самом блоке rightButtons, перед системными кнопками окна.
         bigo_btn = QPushButton(self.ui.rightButtons)
         bigo_btn.setObjectName("bigOButton")
@@ -182,7 +179,7 @@ class MainWindow(QMainWindow):
         bigo_btn.setIconSize(QSize(20, 20))
         self.ui.horizontalLayout_4.insertWidget(0, bigo_btn)
         self.big_o_button = bigo_btn
-        self.big_o_button.clicked.connect(self._toggle_big_o_mode)
+        # clicked → BigOController.toggle_mode (в _setup_bigo_controller)
 
         # Правый sidebar (AI review + progress).
         self.ai_sidebar = QFrame(self.ui.content)
@@ -214,6 +211,15 @@ class MainWindow(QMainWindow):
                 padding: 8px 12px;
                 font-size: 12px;
             }
+            #aiSidebarSettings {
+                color: rgb(200, 200, 200);
+                font-size: 11px;
+            }
+            #aiSidebarHint {
+                color: rgb(140, 140, 140);
+                font-size: 10px;
+                padding: 0 12px 8px 12px;
+            }
             """
         )
         ai_l = QVBoxLayout(self.ai_sidebar)
@@ -222,6 +228,45 @@ class MainWindow(QMainWindow):
         header = QLabel("AI РЕЦЕНЗИЯ", self.ai_sidebar)
         header.setObjectName("aiSidebarHeader")
         ai_l.addWidget(header)
+
+        settings = QFrame(self.ai_sidebar)
+        settings.setObjectName("aiSidebarSettings")
+        settings_l = QVBoxLayout(settings)
+        settings_l.setContentsMargins(12, 4, 12, 4)
+        settings_l.setSpacing(6)
+
+        self.ai_use_checkbox = QCheckBox(
+            "Использовать ИИ для сложных блоков", settings
+        )
+        self.ai_use_checkbox.setChecked(False)
+        settings_l.addWidget(self.ai_use_checkbox)
+
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Модель:", settings))
+        self.ai_model_edit = QLineEdit("qwen2.5-coder:7b", settings)
+        model_row.addWidget(self.ai_model_edit, 1)
+        settings_l.addLayout(model_row)
+
+        timeout_row = QHBoxLayout()
+        timeout_row.addWidget(QLabel("Таймаут (с):", settings))
+        self.ai_timeout_spin = QSpinBox(settings)
+        self.ai_timeout_spin.setRange(5, 600)
+        self.ai_timeout_spin.setValue(60)
+        timeout_row.addWidget(self.ai_timeout_spin)
+        timeout_row.addStretch(1)
+        settings_l.addLayout(timeout_row)
+
+        ai_l.addWidget(settings)
+
+        hint = QLabel(
+            "ИИ вызывается только для блоков, которые не удалось уверенно "
+            "оценить правилами.",
+            self.ai_sidebar,
+        )
+        hint.setObjectName("aiSidebarHint")
+        hint.setWordWrap(True)
+        ai_l.addWidget(hint)
+
         self.ai_sidebar_status = QLabel("", self.ai_sidebar)
         self.ai_sidebar_status.setObjectName("aiSidebarStatus")
         ai_l.addWidget(self.ai_sidebar_status)
@@ -231,9 +276,6 @@ class MainWindow(QMainWindow):
         ai_l.addWidget(self.ai_sidebar_text, 1)
         self.ai_sidebar.hide()
 
-        self._ai_spinner_timer = QTimer(self)
-        self._ai_spinner_timer.setInterval(350)
-        self._ai_spinner_timer.timeout.connect(self._tick_ai_spinner)
         self.ui.sideAiBtn.clicked.connect(self._toggle_ai_sidebar)
 
     # Стартовая ширина sidebar при первом раскрытии. Запоминаем последний
@@ -352,13 +394,6 @@ class MainWindow(QMainWindow):
     def _set_ai_status(self, text: str) -> None:
         self.ai_sidebar_status.setText(text)
 
-    def _tick_ai_spinner(self):
-        if not self._bigo_analysis_running:
-            return
-        self._bigo_spinner_step = (self._bigo_spinner_step + 1) % 4
-        dots = "." * self._bigo_spinner_step
-        self._set_ai_status(f"Анализ проекта{dots}")
-
     def _setup_file_menu(self):
         # Кнопка «Файл» в верхней панели — раскрывающийся список с базовыми
         # действиями. Стилистика меню совпадает с выпадашкой showAllFilesBtn.
@@ -407,118 +442,32 @@ class MainWindow(QMainWindow):
         if not self.sidebar.isVisible():
             self._toggle_sidebar()
 
-    def _setup_bigo_orchestrator(self):
-        # Временный быстрый режим: только статический анализ и визуализация,
-        # без Ollama, чтобы отклик был максимально быстрым.
-        self._bigo_orchestrator = BigOOrchestrator(self, use_ai=False)
-        self._bigo_orchestrator.progress.connect(self._on_bigo_progress)
-        self._bigo_orchestrator.finished.connect(self._on_bigo_finished)
-        self._bigo_orchestrator.failed.connect(self._on_bigo_failed)
+    def _sync_bigo_ai_settings(self) -> None:
+        self.bigo_controller.sync_ai_settings(
+            use_ai=self.ai_use_checkbox.isChecked(),
+            ai_model=self.ai_model_edit.text(),
+            ai_timeout=self.ai_timeout_spin.value(),
+        )
 
-    def _toggle_big_o_mode(self):
-        if self._bigo_enabled or self._bigo_analysis_running:
-            self._disable_big_o_mode()
-            return
-        self._start_big_o_mode()
-
-    def _start_big_o_mode(self):
-        root = self.sidebar.root_path
-        if not root:
-            QMessageBox.information(
-                self,
-                "Big-O анализ",
-                "Сначала откройте папку проекта (Файл → Открыть папку).",
-            )
-            self.big_o_button.setChecked(False)
-            return
-        self._bigo_enabled = True
-        self._bigo_analysis_running = True
-        self._bigo_rows_by_file.clear()
-        self.ai_sidebar_text.clear()
-        self._show_ai_sidebar()
-        self._set_ai_status("Анализ проекта")
-        self._ai_spinner_timer.start()
-        self.editor.clear_big_o_overlays()
-        self.big_o_button.setChecked(True)
-        self._bigo_orchestrator.start(root)
-
-    def _disable_big_o_mode(self):
-        self._bigo_enabled = False
-        self._bigo_analysis_running = False
-        self._ai_spinner_timer.stop()
-        self._set_ai_status("")
-        self.big_o_button.setChecked(False)
-        self._bigo_rows_by_file.clear()
-        self._bigo_orchestrator.cancel()
-        self.editor.clear_big_o_overlays()
-
-    def _on_bigo_progress(self, message: str, percent: int):
-        self._show_ai_sidebar()
-        self._set_ai_status(f"{message} ({percent}%)")
-
-    def _on_bigo_finished(self, result):
-        self._bigo_analysis_running = False
-        self._ai_spinner_timer.stop()
-        self._set_ai_status("Анализ завершён")
-        self._show_ai_sidebar()
-        self.ai_sidebar_text.setPlainText(result.review_text or "")
-
-        rows_by_file: dict[str, list[dict]] = {}
-        for path, blocks in result.blocks_by_file.items():
-            # На Windows один и тот же файл часто приходит в разном виде
-            # (регистр диска, / vs \). Для стабильного матчинга с активной
-            # вкладкой храним ключ только в нормализованном виде.
-            norm = os.path.normcase(os.path.abspath(path))
-            rows_by_file[norm] = to_monaco_decorations(blocks)
-        self._bigo_rows_by_file = rows_by_file
-        if self._bigo_enabled:
-            self._apply_bigo_for_active_tab()
-
-    def _on_bigo_failed(self, message: str):
-        self._bigo_analysis_running = False
-        self._ai_spinner_timer.stop()
-        self._set_ai_status("Ошибка анализа")
-        self.ai_sidebar_text.setPlainText(message)
-        self.big_o_button.setChecked(False)
-        self._bigo_enabled = False
-        self.editor.clear_big_o_overlays()
-
-    def _on_active_tab_changed_for_bigo(self):
-        if not self._bigo_enabled:
-            return
-        self._apply_bigo_for_active_tab()
-
-    def _apply_bigo_for_active_tab(self):
-        if self.tab_manager.active_kind != "text":
-            self.editor.clear_big_o_overlays()
-            return
-        path = self.tab_manager.file_path
-        if not path:
-            self.editor.clear_big_o_overlays()
-            return
-        norm_path = os.path.normcase(os.path.abspath(path))
-        rows = self._bigo_rows_by_file.get(norm_path)
-        if not rows:
-            self.editor.clear_big_o_overlays()
-            # Явно показываем, что для текущего файла нет рассчитанных блоков,
-            # а не «молча» оставляем пользователя без визуальной обратной связи.
-            self._set_ai_status("Для текущего файла блоки Big-O не найдены")
-            return
-        self.editor.apply_big_o_overlays(rows, self._on_bigo_overlay_applied)
-
-    def _on_bigo_overlay_applied(self, result):
-        if not result:
-            return
-        try:
-            row = json.loads(str(result))
-        except Exception:
-            return
-        if not row.get("ok", False):
-            err = row.get("error", "unknown error")
-            self._set_ai_status(f"Ошибка рендера Big-O: {err}")
-            return
-        count = int(row.get("decorations", 0) or 0)
-        self._set_ai_status(f"Big-O блоки отображены: {count}")
+    def _setup_bigo_controller(self):
+        self.bigo_controller = BigOController(
+            self,
+            editor=self.editor,
+            tab_manager=self.tab_manager,
+            get_project_root=lambda: self.sidebar.root_path,
+            big_o_button=self.big_o_button,
+            ai_sidebar_text=self.ai_sidebar_text,
+            show_ai_sidebar=self._show_ai_sidebar,
+            set_ai_status=self._set_ai_status,
+            read_ai_settings=self._sync_bigo_ai_settings,
+            use_ai=False,
+            ai_model="qwen2.5-coder:7b",
+            ai_timeout=60,
+        )
+        self.big_o_button.clicked.connect(self.bigo_controller.toggle_mode)
+        self.tab_manager.active_tab_changed.connect(
+            self.bigo_controller.on_active_tab_changed
+        )
 
     def _setup_navigation(self):
         # Аналог VS Code «Go Back / Go Forward»: внутри Monaco это встроенные
