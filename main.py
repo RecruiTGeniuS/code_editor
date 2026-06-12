@@ -6,21 +6,18 @@ from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFrame,
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QSplitter,
     QStackedWidget,
-    QTextEdit,
+    QTextBrowser,
     QVBoxLayout,
 )
 
@@ -204,21 +201,32 @@ class MainWindow(QMainWindow):
                 font-size: 11px;
                 padding: 4px 12px;
             }
+            #aiReviewTabs {
+                padding: 2px 12px 0px 12px;
+            }
+            QPushButton[aiReviewTab="true"] {
+                background-color: rgba(255, 255, 255, 8);
+                color: rgb(190, 190, 190);
+                border: 1px solid rgba(255, 255, 255, 18);
+                border-radius: 0px;
+                padding: 5px 10px;
+                font-size: 11px;
+            }
+            QPushButton[aiReviewTab="true"]:hover {
+                background-color: rgba(255, 255, 255, 24);
+                color: rgb(225, 225, 225);
+            }
+            QPushButton[aiReviewTab="true"][active="true"] {
+                background-color: rgba(120, 150, 210, 40);
+                color: rgb(235, 240, 255);
+                border: 1px solid rgba(150, 180, 240, 65);
+            }
             #aiSidebarText {
                 background-color: rgb(32, 33, 38);
                 color: rgb(220, 220, 220);
                 border: none;
                 padding: 8px 12px;
                 font-size: 12px;
-            }
-            #aiSidebarSettings {
-                color: rgb(200, 200, 200);
-                font-size: 11px;
-            }
-            #aiSidebarHint {
-                color: rgb(140, 140, 140);
-                font-size: 10px;
-                padding: 0 12px 8px 12px;
             }
             """
         )
@@ -229,50 +237,31 @@ class MainWindow(QMainWindow):
         header.setObjectName("aiSidebarHeader")
         ai_l.addWidget(header)
 
-        settings = QFrame(self.ai_sidebar)
-        settings.setObjectName("aiSidebarSettings")
-        settings_l = QVBoxLayout(settings)
-        settings_l.setContentsMargins(12, 4, 12, 4)
-        settings_l.setSpacing(6)
-
-        self.ai_use_checkbox = QCheckBox(
-            "Использовать ИИ для сложных блоков", settings
-        )
-        self.ai_use_checkbox.setChecked(False)
-        settings_l.addWidget(self.ai_use_checkbox)
-
-        model_row = QHBoxLayout()
-        model_row.addWidget(QLabel("Модель:", settings))
-        self.ai_model_edit = QLineEdit("qwen2.5-coder:7b", settings)
-        model_row.addWidget(self.ai_model_edit, 1)
-        settings_l.addLayout(model_row)
-
-        timeout_row = QHBoxLayout()
-        timeout_row.addWidget(QLabel("Таймаут (с):", settings))
-        self.ai_timeout_spin = QSpinBox(settings)
-        self.ai_timeout_spin.setRange(5, 600)
-        self.ai_timeout_spin.setValue(60)
-        timeout_row.addWidget(self.ai_timeout_spin)
-        timeout_row.addStretch(1)
-        settings_l.addLayout(timeout_row)
-
-        ai_l.addWidget(settings)
-
-        hint = QLabel(
-            "ИИ вызывается только для блоков, которые не удалось уверенно "
-            "оценить правилами.",
-            self.ai_sidebar,
-        )
-        hint.setObjectName("aiSidebarHint")
-        hint.setWordWrap(True)
-        ai_l.addWidget(hint)
+        tabs = QFrame(self.ai_sidebar)
+        tabs.setObjectName("aiReviewTabs")
+        tabs_l = QHBoxLayout(tabs)
+        tabs_l.setContentsMargins(0, 0, 0, 0)
+        tabs_l.setSpacing(0)
+        self.ai_project_tab_btn = QPushButton("Проект", tabs)
+        self.ai_project_tab_btn.setProperty("aiReviewTab", True)
+        self.ai_project_tab_btn.setProperty("active", True)
+        self.ai_blocks_tab_btn = QPushButton("Блоки", tabs)
+        self.ai_blocks_tab_btn.setProperty("aiReviewTab", True)
+        self.ai_blocks_tab_btn.setProperty("active", False)
+        self.ai_blocks_tab_btn.hide()
+        tabs_l.addWidget(self.ai_project_tab_btn)
+        tabs_l.addWidget(self.ai_blocks_tab_btn)
+        ai_l.addWidget(tabs)
 
         self.ai_sidebar_status = QLabel("", self.ai_sidebar)
         self.ai_sidebar_status.setObjectName("aiSidebarStatus")
+        self.ai_sidebar_status.hide()
         ai_l.addWidget(self.ai_sidebar_status)
-        self.ai_sidebar_text = QTextEdit(self.ai_sidebar)
+        self.ai_sidebar_text = QTextBrowser(self.ai_sidebar)
         self.ai_sidebar_text.setObjectName("aiSidebarText")
         self.ai_sidebar_text.setReadOnly(True)
+        self.ai_sidebar_text.setOpenExternalLinks(False)
+        self.ai_sidebar_text.setOpenLinks(False)
         ai_l.addWidget(self.ai_sidebar_text, 1)
         self.ai_sidebar.hide()
 
@@ -393,6 +382,7 @@ class MainWindow(QMainWindow):
 
     def _set_ai_status(self, text: str) -> None:
         self.ai_sidebar_status.setText(text)
+        self.ai_sidebar_status.setVisible(bool(text.strip()))
 
     def _setup_file_menu(self):
         # Кнопка «Файл» в верхней панели — раскрывающийся список с базовыми
@@ -444,9 +434,9 @@ class MainWindow(QMainWindow):
 
     def _sync_bigo_ai_settings(self) -> None:
         self.bigo_controller.sync_ai_settings(
-            use_ai=self.ai_use_checkbox.isChecked(),
-            ai_model=self.ai_model_edit.text(),
-            ai_timeout=self.ai_timeout_spin.value(),
+            use_ai=False,
+            ai_model="qwen2.5-coder:7b",
+            ai_timeout=60,
         )
 
     def _setup_bigo_controller(self):
@@ -459,6 +449,8 @@ class MainWindow(QMainWindow):
             ai_sidebar_text=self.ai_sidebar_text,
             show_ai_sidebar=self._show_ai_sidebar,
             set_ai_status=self._set_ai_status,
+            project_review_button=self.ai_project_tab_btn,
+            block_reviews_button=self.ai_blocks_tab_btn,
             read_ai_settings=self._sync_bigo_ai_settings,
             use_ai=False,
             ai_model="qwen2.5-coder:7b",

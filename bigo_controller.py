@@ -11,17 +11,35 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
 from typing import Callable
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QMessageBox, QPushButton, QTextEdit, QWidget
+from PySide6.QtCore import (
+    QByteArray,
+    QBuffer,
+    QEvent,
+    QIODevice,
+    QObject,
+    QRectF,
+    QTimer,
+    Qt,
+    QUrl,
+)
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PySide6.QtWidgets import (
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QWidget,
+)
 
 from bigo.block_review import build_block_review
-from bigo.models import AnalysisResult, CodeBlock
+from bigo.block_utils import analyzable_blocks
+from bigo.models import BIG_O_CLASSES, AnalysisResult, CodeBlock
 from bigo.orchestrator import BigOOrchestrator
-from bigo.overlay_model import to_monaco_decorations
+from bigo.overlay_model import complexity_color_class, to_monaco_decorations
 from monaco_widget import CustomMonaco
 from tab_manager import TabManager
 
@@ -47,6 +65,23 @@ def _load_review_icon_data_uri() -> str:
     return ""
 
 
+class _ProjectReviewResizeFilter(QObject):
+    """Debounce-перерисовка HTML-отчёта при изменении ширины правой панели."""
+
+    def __init__(self, controller: "BigOController", parent=None) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(120)
+        self._timer.timeout.connect(controller._rerender_project_review_if_visible)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self._timer.start()
+        return super().eventFilter(obj, event)
+
+
 class BigOController:
     """Управление Big-O режимом без знания о полной структуре MainWindow."""
 
@@ -61,6 +96,8 @@ class BigOController:
         ai_sidebar_text: QTextEdit,
         show_ai_sidebar: Callable[[], None],
         set_ai_status: Callable[[str], None],
+        project_review_button: QPushButton | None = None,
+        block_reviews_button: QPushButton | None = None,
         read_ai_settings: Callable[[], None] | None = None,
         use_ai: bool = False,
         ai_model: str = "qwen2.5-coder:7b",
@@ -74,6 +111,8 @@ class BigOController:
         self._ai_sidebar_text = ai_sidebar_text
         self._show_ai_sidebar = show_ai_sidebar
         self._set_ai_status = set_ai_status
+        self._project_review_button = project_review_button
+        self._block_reviews_button = block_reviews_button
         self._read_ai_settings = read_ai_settings
 
         self.use_ai = use_ai
@@ -87,6 +126,12 @@ class BigOController:
         self._results_by_id: dict[str, AnalysisResult] = {}
         self._ollama_available_last: bool | None = None
         self._project_review_text: str = ""
+        self._last_project_result = None
+        self._showing_project_review = False
+        self._project_review_chart_width: int | None = None
+        self._block_review_history: dict[str, str] = {}
+        self._block_review_order: list[str] = []
+        self._active_block_review_id: str | None = None
         self._spinner_step = 0
         self._last_status_message = ""
 
@@ -101,6 +146,18 @@ class BigOController:
             self._editor.block_review_requested.connect(self.review_block)
         except Exception:
             pass
+        if hasattr(self._ai_sidebar_text, "anchorClicked"):
+            try:
+                self._ai_sidebar_text.anchorClicked.connect(
+                    self._on_sidebar_link_clicked
+                )
+            except Exception:
+                pass
+        self._review_resize_filter = _ProjectReviewResizeFilter(
+            self, self._ai_sidebar_text
+        )
+        self._ai_sidebar_text.viewport().installEventFilter(self._review_resize_filter)
+        self._setup_review_tabs()
         self._review_icon_uri = _load_review_icon_data_uri()
         if self._review_icon_uri:
             # Иконка ставится после initialized, чтобы JS-слой кнопок уже
@@ -115,6 +172,36 @@ class BigOController:
     def _apply_review_icon(self) -> None:
         if self._review_icon_uri:
             self._editor.set_big_o_review_icon(self._review_icon_uri)
+
+    def _setup_review_tabs(self) -> None:
+        if self._project_review_button is not None:
+            self._project_review_button.clicked.connect(self.show_project_review_tab)
+            self._set_review_button_active(self._project_review_button, True)
+        if self._block_reviews_button is not None:
+            self._block_reviews_button.clicked.connect(self.show_block_reviews_tab)
+            self._block_reviews_button.hide()
+            self._set_review_button_active(self._block_reviews_button, False)
+
+    @staticmethod
+    def _set_review_button_active(button: QPushButton, active: bool) -> None:
+        button.setProperty("active", active)
+        button.style().unpolish(button)
+        button.style().polish(button)
+
+    def _set_active_review_tab(self, tab: str) -> None:
+        project_active = tab == "project"
+        if self._project_review_button is not None:
+            self._set_review_button_active(
+                self._project_review_button, project_active
+            )
+        if self._block_reviews_button is not None:
+            self._set_review_button_active(
+                self._block_reviews_button, not project_active
+            )
+
+    def _set_block_tab_visible(self, visible: bool) -> None:
+        if self._block_reviews_button is not None:
+            self._block_reviews_button.setVisible(visible)
 
     def sync_ai_settings(
         self,
@@ -177,6 +264,13 @@ class BigOController:
         self._rows_by_file.clear()
         self._blocks_by_id.clear()
         self._results_by_id.clear()
+        self._last_project_result = None
+        self._showing_project_review = False
+        self._project_review_chart_width = None
+        self._block_review_history.clear()
+        self._block_review_order.clear()
+        self._active_block_review_id = None
+        self._set_block_tab_visible(False)
         self._ai_sidebar_text.clear()
         self._show_ai_sidebar()
         self._last_status_message = "Анализ проекта"
@@ -196,6 +290,13 @@ class BigOController:
         self._rows_by_file.clear()
         self._blocks_by_id.clear()
         self._results_by_id.clear()
+        self._last_project_result = None
+        self._showing_project_review = False
+        self._project_review_chart_width = None
+        self._block_review_history.clear()
+        self._block_review_order.clear()
+        self._active_block_review_id = None
+        self._set_block_tab_visible(False)
         if self._orchestrator is not None:
             self._orchestrator.cancel()
         self._editor.clear_big_o_overlays()
@@ -236,26 +337,521 @@ class BigOController:
         self._set_ai_status(f"{message} ({percent}%)")
 
     @staticmethod
-    def _format_source_summary(result) -> str:
-        counts = result.source_kind_counts()
-        lines = ["", "--- Источники оценок ---"]
-        label_map = {"static": "rule", "llm": "llm", "cache": "cache"}
-        for key in ("cache", "static", "llm"):
-            n = counts.get(key, 0)
-            if n:
-                lines.append(f"{label_map[key]}: {n}")
-        unknown_n = result.unknown_block_count()
-        if unknown_n:
-            lines.append(f"unknown / needs review: {unknown_n}")
-        if result.ai_blocks_sent:
-            lines.append(f"Передано в AI: {result.ai_blocks_sent}")
-        if result.ai_llm_errors:
-            lines.append(f"llm_error (AI не ответил): {result.ai_llm_errors}")
-        if result.ollama_available is False:
-            lines.append(
-                "Ollama недоступна — для части блоков AI-оценка не выполнена."
+    def _complexity_color(complexity: str | None) -> str:
+        palette = {
+            "green": "rgba(80, 200, 100, 0.95)",
+            "gray": "rgba(200, 200, 200, 0.95)",
+            "yellow": "rgba(235, 210, 90, 0.95)",
+            "red": "rgba(245, 110, 110, 0.95)",
+        }
+        return palette.get(complexity_color_class(complexity), palette["gray"])
+
+    @staticmethod
+    def _complexity_qcolor(complexity: str | None, alpha: int = 242) -> QColor:
+        palette = {
+            "green": QColor(80, 200, 100, alpha),
+            "gray": QColor(200, 200, 200, alpha),
+            "yellow": QColor(235, 210, 90, alpha),
+            "red": QColor(245, 110, 110, alpha),
+        }
+        return palette.get(complexity_color_class(complexity), palette["gray"])
+
+    @staticmethod
+    def _count_complexities(blocks: list[CodeBlock]) -> dict[str, int]:
+        counts = {k: 0 for k in BIG_O_CLASSES}
+        for block in blocks:
+            if block.complexity in counts:
+                counts[block.complexity] += 1
+        return counts
+
+    @staticmethod
+    def _block_label(block: CodeBlock) -> str:
+        return block.qualified_name or block.short_name or block.kind
+
+    def _pick_project_recommendations(
+        self, blocks: list[CodeBlock], limit: int = 5
+    ) -> list[CodeBlock]:
+        rank = {name: i for i, name in enumerate(BIG_O_CLASSES)}
+
+        def score(block: CodeBlock) -> tuple[int, int, int, int]:
+            complexity_rank = rank.get(block.complexity or "", -1)
+            needs_review = 1 if block.complexity in (None, "unknown") else 0
+            loop_depth = getattr(block.features, "max_loop_depth", 0) or 0
+            call_count = getattr(block.features, "call_count", 0) or 0
+            return (complexity_rank, needs_review, loop_depth, call_count)
+
+        candidates = [
+            b
+            for b in blocks
+            if b.complexity in {"O(n^2)", "O(n^2 log n)", "O(n^3)", "O(2^n)", "O(n!)"}
+            or b.complexity in (None, "unknown")
+            or getattr(b.features, "max_loop_depth", 0) >= 2
+        ]
+        return sorted(candidates, key=score, reverse=True)[:limit]
+
+    def _project_review_summary(
+        self, analyzed: list[CodeBlock], counts: dict[str, int]
+    ) -> str:
+        total = len(analyzed)
+        if total == 0:
+            return "В проекте не найдено анализируемых функций или методов."
+        heavy = sum(
+            counts.get(k, 0)
+            for k in ("O(n^2)", "O(n^2 log n)", "O(n^3)", "O(2^n)", "O(n!)")
+        )
+        linear_or_better = sum(counts.get(k, 0) for k in ("O(1)", "O(log n)", "O(n)"))
+        if heavy == 0:
+            return (
+                "Проект выглядит умеренным по сложности: большая часть блоков "
+                "имеет линейную или лучшую оценку, явных тяжёлых hotspots не найдено."
             )
-        return "\n".join(lines)
+        if heavy <= max(1, total // 5):
+            return (
+                "Общая картина хорошая, но есть отдельные тяжёлые места. "
+                "Их стоит проверить первыми, потому что именно они сильнее всего "
+                "влияют на рост времени выполнения на больших данных."
+            )
+        if linear_or_better >= heavy:
+            return (
+                "В проекте смешанная картина: базовая часть кода выглядит приемлемо, "
+                "но заметная доля блоков имеет квадратичную или более высокую "
+                "сложность. Нужна приоритизация hotspots."
+            )
+        return (
+            "Проект требует внимания по производительности: тяжёлые блоки занимают "
+            "значительную часть результатов анализа. Начните с самых дорогих "
+            "циклов, рекурсии и повторяющихся вызовов."
+        )
+
+    @staticmethod
+    def _recommendation_text(block: CodeBlock) -> str:
+        f = block.features
+        if block.complexity in {"O(2^n)", "O(n!)"} or f.has_recursion:
+            return "Проверить рекурсию и повторные вычисления; рассмотреть memoization или итеративный DP."
+        if block.complexity in {"O(n^3)", "O(n^2)", "O(n^2 log n)"} or f.max_loop_depth >= 2:
+            return "Проверить вложенные циклы; искать возможность вынести инварианты, добавить индекс/хеш-таблицу или снизить вложенность."
+        if f.has_sorting:
+            return "Проверить, нельзя ли сортировать один раз заранее или заменить повторную сортировку структурой данных."
+        if block.complexity in (None, "unknown"):
+            return "Оценка не уверенная: проверить вручную зависимости от входа и стоимость вызываемых функций."
+        return "Проверить горячий путь и убедиться, что оценка соответствует реальным данным."
+
+    @staticmethod
+    def _chart_complexity_label(complexity: str) -> str:
+        labels = {
+            "O(1)": "1",
+            "O(log n)": "log",
+            "O(n)": "n",
+            "O(n log n)": "n·log",
+            "O(n^2)": "n²",
+            "O(n^2 log n)": "n²·log",
+            "O(n^3)": "n³",
+            "O(2^n)": "2ⁿ",
+            "O(n!)": "n!",
+        }
+        return labels.get(complexity, complexity)
+
+    def _review_content_width(self) -> int:
+        width = 340
+        try:
+            width = self._ai_sidebar_text.viewport().width() - 40
+        except Exception:
+            pass
+        return max(240, min(520, width))
+
+    def _complexity_chart_data_uri(self, counts: dict[str, int], width: int) -> str:
+        """Нарисовать столбчатую диаграмму как PNG для QTextBrowser.
+
+        QTextBrowser поддерживает только ограниченный HTML/CSS, поэтому flex/div
+        chart не отображается как в браузере. PNG надёжно показывает прозрачный
+        фон и реальные столбцы внутри той же правой панели.
+        """
+        width = max(240, int(width))
+        height = 188
+        left = 28
+        right = 8
+        top = 22
+        bottom = 44
+        plot_w = width - left - right
+        plot_h = height - top - bottom
+        baseline = top + plot_h
+        max_count = max(counts.values(), default=0) or 1
+
+        img = QImage(width, height, QImage.Format.Format_ARGB32)
+        img.fill(QColor(0, 0, 0, 0))
+
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        axis_pen = QPen(QColor(255, 255, 255, 36))
+        axis_pen.setWidth(1)
+        painter.setPen(axis_pen)
+        painter.drawLine(left, top, left, baseline)
+        painter.drawLine(left, baseline, width - right, baseline)
+
+        label_font = QFont("Segoe UI", 8)
+        count_font = QFont("Segoe UI", 7)
+        painter.setFont(count_font)
+        painter.setPen(QColor(185, 185, 185, 220))
+        painter.drawText(0, top - 2, left - 5, 14, Qt.AlignRight, str(max_count))
+        painter.drawText(0, baseline - 7, left - 5, 14, Qt.AlignRight, "0")
+
+        n_classes = len(BIG_O_CLASSES)
+        slot_w = plot_w / max(1, n_classes)
+        bar_w = max(10, int(slot_w * 0.58))
+
+        for idx, complexity in enumerate(BIG_O_CLASSES):
+            count = counts.get(complexity, 0)
+            bar_h = int((count / max_count) * (plot_h - 16)) if count else 3
+            x = int(left + idx * slot_w + (slot_w - bar_w) / 2)
+            y = baseline - bar_h
+            color = self._complexity_qcolor(complexity, 245 if count else 70)
+            painter.fillRect(x, y, bar_w, bar_h, color)
+
+            painter.setFont(count_font)
+            painter.setPen(QColor(220, 220, 220, 230))
+            count_y = max(2, y - 18)
+            painter.drawText(
+                x - 6,
+                count_y,
+                bar_w + 12,
+                12,
+                Qt.AlignCenter,
+                str(count),
+            )
+
+            painter.setFont(label_font)
+            painter.setPen(QColor(190, 190, 190, 230))
+            label_rect_x = int(left + idx * slot_w)
+            label_text = self._chart_complexity_label(complexity)
+            painter.drawText(
+                label_rect_x,
+                baseline + 8,
+                int(slot_w),
+                bottom - 6,
+                Qt.AlignHCenter | Qt.AlignTop,
+                label_text,
+            )
+
+        painter.end()
+
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(buffer, "PNG")
+        buffer.close()
+        encoded = base64.b64encode(bytes(data)).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @staticmethod
+    def _clear_button_data_uri() -> str:
+        """Нарисовать кнопку очистки как PNG.
+
+        QTextBrowser поддерживает только ограниченный CSS, поэтому border-radius
+        у HTML-ссылки может не отображаться. PNG гарантирует видимую скруглённую
+        рамку и фон, при этом сама картинка остаётся внутри кликабельной ссылки.
+        """
+        width = 78
+        height = 24
+        img = QImage(width, height, QImage.Format.Format_ARGB32)
+        img.fill(QColor(0, 0, 0, 0))
+
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = QRectF(1.0, 1.0, width - 2.0, height - 2.0)
+        painter.setPen(QPen(QColor(245, 110, 110, 120), 1))
+        painter.setBrush(QColor(245, 110, 110, 32))
+        painter.drawRoundedRect(rect, 8.0, 8.0)
+        painter.setPen(QColor(255, 185, 185, 245))
+        painter.setFont(QFont("Segoe UI", 7))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Очистить")
+        painter.end()
+
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(buffer, "PNG")
+        buffer.close()
+        encoded = base64.b64encode(bytes(data)).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    def _format_project_review_html(self, result) -> str:
+        analyzed = analyzable_blocks(result.all_blocks)
+        counts = self._count_complexities(analyzed)
+        recommendations = self._pick_project_recommendations(analyzed)
+        chart_width = self._review_content_width()
+        self._project_review_chart_width = chart_width
+        chart_uri = self._complexity_chart_data_uri(counts, chart_width)
+
+        rec_items: list[str] = []
+        for block in recommendations:
+            bid = next(
+                (k for k, v in self._blocks_by_id.items() if v is block),
+                block.stable_id or block.block_id,
+            )
+            label = self._block_label(block)
+            file_name = os.path.basename(block.file_path)
+            complexity = block.complexity or "unknown"
+            rec_items.append(
+                f"""
+                <div class="rec-card">
+                  <a class="rec-title" href="bigo://block/{html.escape(bid)}">
+                    {html.escape(label)}
+                  </a>
+                  <div class="rec-meta">
+                    {html.escape(file_name)}:{block.start_line}-{block.end_line}
+                    · {html.escape(complexity)}
+                  </div>
+                  <div class="rec-text">{html.escape(self._recommendation_text(block))}</div>
+                </div>
+                """
+            )
+
+        rec_html = (
+            "".join(rec_items)
+            if rec_items
+            else '<div class="muted">Критичных hotspots по текущим правилам не найдено.</div>'
+        )
+        summary = self._project_review_summary(analyzed, counts)
+
+        return f"""
+        <html>
+        <head>
+        <style>
+          body {{
+            margin: 0;
+            background: rgb(32, 33, 38);
+            color: rgb(220, 220, 220);
+            font-family: "Segoe UI", Arial, sans-serif;
+            font-size: 12px;
+          }}
+          .wrap {{ padding: 4px 12px 14px 12px; }}
+          .stat {{
+            margin-bottom: 12px;
+            color: rgb(210, 210, 210);
+            font-size: 13px;
+          }}
+          h3 {{
+            margin: 12px 0 8px 0;
+            font-size: 12px;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: rgb(235, 235, 235);
+          }}
+          .chart {{
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 6px;
+            text-align: center;
+          }}
+          .chart-img {{ background: transparent; border: 0; }}
+          .summary {{
+            color: rgb(215, 215, 215);
+            line-height: 1.45;
+          }}
+          .rec-card {{
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 8px;
+            margin: 7px 0;
+            background: rgba(255, 255, 255, 0.025);
+          }}
+          .rec-title {{
+            color: rgb(145, 190, 255);
+            font-weight: 600;
+            text-decoration: none;
+          }}
+          .rec-meta {{
+            color: rgb(165, 165, 165);
+            font-size: 11px;
+            margin-top: 3px;
+          }}
+          .rec-text {{
+            color: rgb(215, 215, 215);
+            line-height: 1.35;
+            margin-top: 6px;
+          }}
+          .muted {{ color: rgb(165, 165, 165); }}
+        </style>
+        </head>
+        <body>
+        <div class="wrap">
+          <div class="stat">
+            Всего блоков проанализированно: <b>{len(analyzed)}</b>
+          </div>
+
+          <h3>Распределение по сложности</h3>
+          <div class="chart">
+            <img class="chart-img" src="{chart_uri}" width="{chart_width}" height="188" />
+          </div>
+
+          <h3>Общая оценка</h3>
+          <div class="summary">{html.escape(summary)}</div>
+
+          <h3>Рекомендации</h3>
+          {rec_html}
+        </div>
+        </body>
+        </html>
+        """
+
+    def _format_block_reviews_html(self) -> str:
+        if not self._block_review_order:
+            return """
+            <html><body style="background: rgb(32,33,38); color: rgb(190,190,190);
+            font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; margin: 0;">
+              <div style="padding: 10px 12px;">Рецензии отдельных блоков пока не открывались.</div>
+            </body></html>
+            """
+
+        active_id = self._active_block_review_id or self._block_review_order[-1]
+        nav_items: list[str] = []
+        for bid in self._block_review_order:
+            block = self._blocks_by_id.get(bid)
+            if block is None:
+                continue
+            label = self._block_label(block)
+            file_name = os.path.basename(block.file_path)
+            active_class = " active" if bid == active_id else ""
+            nav_items.append(
+                f"""
+                <div class="block-row">
+                  <a class="block-pill{active_class}" href="bigo://review/{html.escape(bid)}">
+                    {html.escape(label)} · {html.escape(file_name)}:{block.start_line}
+                  </a>
+                </div>
+                """
+            )
+
+        active_block = self._blocks_by_id.get(active_id)
+        goto_link = ""
+        if active_block is not None:
+            goto_link = (
+                f'<a class="goto-link" href="bigo://block/{html.escape(active_id)}">'
+                "Перейти к блоку в коде</a>"
+            )
+        review = html.escape(self._block_review_history.get(active_id, "")).replace(
+            "\n", "<br>"
+        )
+        clear_button_uri = self._clear_button_data_uri()
+
+        return f"""
+        <html>
+        <head>
+        <style>
+          body {{
+            margin: 0;
+            background: rgb(32, 33, 38);
+            color: rgb(220, 220, 220);
+            font-family: "Segoe UI", Arial, sans-serif;
+            font-size: 12px;
+          }}
+          .wrap {{ padding: 10px 12px 14px 12px; }}
+          h3 {{
+            margin: 14px 0 7px 0;
+            font-size: 12px;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: rgb(235, 235, 235);
+          }}
+          .goto-link {{
+            color: rgb(145, 190, 255);
+            text-decoration: none;
+            font-size: 11px;
+          }}
+          .review-box {{
+            margin-top: 7px;
+            line-height: 1.38;
+            color: rgb(220, 220, 220);
+          }}
+          .block-list {{
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 7px;
+            background: rgba(255, 255, 255, 0.018);
+            padding: 6px;
+            margin-top: 4px;
+          }}
+          .block-row {{
+            display: block;
+            margin: 0 0 6px 0;
+            padding: 0;
+          }}
+          .block-row:last-child {{
+            margin-bottom: 0;
+          }}
+          .block-pill {{
+            display: block;
+            color: rgb(205, 205, 205);
+            text-decoration: none;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 5px;
+            padding: 5px 7px;
+            margin: 0;
+            background: rgba(255, 255, 255, 0.025);
+            font-size: 11px;
+          }}
+          .block-pill.active {{
+            color: rgb(235, 240, 255);
+            border-color: rgba(150, 180, 240, 0.38);
+            background: rgba(120, 150, 210, 0.16);
+          }}
+          .clear-row {{
+            display: block;
+            padding-top: 18px;
+          }}
+          .clear-link {{ text-decoration: none; }}
+          .clear-img {{ border: 0; }}
+        </style>
+        </head>
+        <body>
+          <div class="wrap">
+            {goto_link}
+            <div class="review-box">{review}</div>
+            <h3>Проанализированные блоки</h3>
+            <div class="block-list">{''.join(nav_items)}</div>
+            <div class="clear-row">
+              <a class="clear-link" href="bigo://clear/blocks">
+                <img class="clear-img" src="{clear_button_uri}" width="78" height="24" />
+              </a>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+
+    def show_project_review_tab(self) -> None:
+        if not self._project_review_text:
+            return
+        self._show_ai_sidebar()
+        self._showing_project_review = True
+        self._set_ai_status("")
+        self._set_active_review_tab("project")
+        if hasattr(self._ai_sidebar_text, "setHtml"):
+            self._ai_sidebar_text.setHtml(self._project_review_text)
+        else:
+            self._ai_sidebar_text.setPlainText(self._project_review_text)
+
+    def show_block_reviews_tab(self) -> None:
+        if not self._block_review_order:
+            return
+        self._show_ai_sidebar()
+        self._showing_project_review = False
+        self._set_active_review_tab("blocks")
+        if hasattr(self._ai_sidebar_text, "setHtml"):
+            self._ai_sidebar_text.setHtml(self._format_block_reviews_html())
+        else:
+            active_id = self._active_block_review_id or self._block_review_order[-1]
+            self._ai_sidebar_text.setPlainText(
+                self._block_review_history.get(active_id, "")
+            )
+
+    def clear_block_reviews(self) -> None:
+        self._block_review_history.clear()
+        self._block_review_order.clear()
+        self._active_block_review_id = None
+        self._set_block_tab_visible(False)
+        self.show_project_review_tab()
 
     def _index_blocks(self, result) -> None:
         from bigo.dependency_graph import block_graph_id
@@ -267,20 +863,19 @@ class BigOController:
     def _on_finished(self, result) -> None:
         self._analysis_running = False
         self._spinner_timer.stop()
-        summary = self._format_source_summary(result)
-        status_parts = ["Анализ завершён"]
-        if result.ai_blocks_sent:
-            status_parts.append(f"AI: {result.ai_blocks_sent}")
-        if result.ollama_available is False:
-            status_parts.append("Ollama недоступна")
-        self._last_status_message = " · ".join(status_parts)
-        self._set_ai_status(self._last_status_message)
+        self._last_status_message = ""
+        self._set_ai_status("")
         self._show_ai_sidebar()
-        review = (result.review_text or "").rstrip()
-        self._project_review_text = review + summary
-        self._ai_sidebar_text.setPlainText(self._project_review_text)
 
         self._index_blocks(result)
+        self._last_project_result = result
+        self._showing_project_review = True
+        self._project_review_text = self._format_project_review_html(result)
+        self._set_active_review_tab("project")
+        if hasattr(self._ai_sidebar_text, "setHtml"):
+            self._ai_sidebar_text.setHtml(self._project_review_text)
+        else:
+            self._ai_sidebar_text.setPlainText(result.review_text or "")
 
         rows_by_file: dict[str, list[dict]] = {}
         for path, blocks in result.blocks_by_file.items():
@@ -313,7 +908,60 @@ class BigOController:
             self._set_ai_status(f"Ошибка рендера Big-O: {err}")
             return
         count = int(row.get("decorations", 0) or 0)
-        self._set_ai_status(f"Big-O блоки отображены: {count}")
+        if not self._showing_project_review:
+            self._set_ai_status(f"Big-O блоки отображены: {count}")
+
+    def _rerender_project_review_if_visible(self) -> None:
+        if not self._showing_project_review or self._last_project_result is None:
+            return
+        if not hasattr(self._ai_sidebar_text, "setHtml"):
+            return
+        new_width = self._review_content_width()
+        if (
+            self._project_review_chart_width is not None
+            and abs(new_width - self._project_review_chart_width) < 4
+        ):
+            return
+        scroll_bar = self._ai_sidebar_text.verticalScrollBar()
+        old_scroll = scroll_bar.value()
+        self._project_review_text = self._format_project_review_html(
+            self._last_project_result
+        )
+        self._ai_sidebar_text.setHtml(self._project_review_text)
+        QTimer.singleShot(
+            0,
+            lambda value=old_scroll: self._ai_sidebar_text.verticalScrollBar().setValue(
+                min(value, self._ai_sidebar_text.verticalScrollBar().maximum())
+            ),
+        )
+
+    def _on_sidebar_link_clicked(self, url: QUrl) -> None:
+        if url.scheme() != "bigo":
+            return
+        if url.host() == "block":
+            block_id = url.path().lstrip("/")
+            if block_id:
+                self.go_to_block(block_id)
+            return
+        if url.host() == "review":
+            block_id = url.path().lstrip("/")
+            if block_id and block_id in self._block_review_history:
+                self._active_block_review_id = block_id
+                self.show_block_reviews_tab()
+            return
+        if url.host() == "clear" and url.path().lstrip("/") == "blocks":
+            self.clear_block_reviews()
+            return
+
+    def go_to_block(self, block_id: str) -> None:
+        block = self._blocks_by_id.get(block_id)
+        if block is None:
+            self._set_ai_status(
+                f"Big-O: блок не найден (id={block_id[:8]}…), запустите анализ заново"
+            )
+            return
+        self._tab_manager.open_file(block.file_path)
+        self._editor.set_cursor(block.start_line, 1, move_to_position="center")
 
     def review_block(self, block_id: str) -> None:
         """Сформировать локальную рецензию блока и показать её в правой панели.
@@ -341,6 +989,11 @@ class BigOController:
             ai_available=self._ollama_available_last,
         )
         self._show_ai_sidebar()
-        self._ai_sidebar_text.setPlainText(text)
+        self._block_review_history[block_id] = text
+        if block_id not in self._block_review_order:
+            self._block_review_order.append(block_id)
+        self._active_block_review_id = block_id
+        self._set_block_tab_visible(True)
+        self.show_block_reviews_tab()
         name = block.qualified_name or block.short_name
         self._set_ai_status(f"Рецензия блока: {name}")

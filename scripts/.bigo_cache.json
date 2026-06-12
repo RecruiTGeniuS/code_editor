@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "items": {
+    "P:/Projects/senior_thesis/code_editor/scripts\\test_ollama_bigo.py|20|59|function|main|dedc114ae9f29ae6f4112b462fc80587d810cad9": {
+      "complexity": "unknown",
+      "reason": "Rule-based анализ не смог уверенно оценить блок; AI fallback отключен.",
+      "source_kind": "static",
+      "features": {
+        "loop_count": 0,
+        "max_loop_depth": 0,
+        "branch_count": 1,
+        "call_count": 11,
+        "project_call_count": 0,
+        "external_call_count": 11,
+        "has_recursion": false,
+        "recursion_kind": null,
+        "has_sorting": false,
+        "has_log_pattern": false,
+        "container_operations": [],
+        "loop_summaries": [],
+        "call_summaries": [
+          {
+            "name": "CodeBlock",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "AnalysisResult",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "BlockFeatures",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "build_llm_block_payload",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "dumps",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "OllamaBigOClient",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "is_available",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "estimate_with_ai",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "main_loop_linear",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "helper_linear",
+            "kind": "external",
+            "resolved": false
+          },
+          {
+            "name": "O",
+            "kind": "external",
+            "resolved": false
+          }
+        ],
+        "uncertainty_flags": [
+          "many_calls_no_loops",
+          "unresolved_call:AnalysisResult",
+          "unresolved_call:BlockFeatures",
+          "unresolved_call:CodeBlock",
+          "unresolved_call:O",
+          "unresolved_call:OllamaBigOClient",
+          "unresolved_call:build_llm_block_payload",
+          "unresolved_call:dumps",
+          "unresolved_call:estimate_with_ai",
+          "unresolved_call:helper_linear",
+          "unresolved_call:is_available",
+          "unresolved_call:main_loop_linear"
+        ],
+        "has_sort_call": false,
+        "self_call_count": 0
+      }
+    }
+  }
+}

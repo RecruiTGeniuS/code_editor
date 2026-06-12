@@ -345,6 +345,12 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
             var endCol = model.getLineMaxColumn(e);
             var lbl = "[" + (r.label || "O(?)") + "]";
             var hover = (r.hover || r.label || "Big-O");
+            // Minimap стабильнее принимает hex-цвета, чем rgba(...).
+            // Эти значения соответствуют цветам Big-O подсветки в редакторе.
+            var navColor = (sev === "green" ? "#50c864" :
+                            sev === "yellow" ? "#ebd25a" :
+                            sev === "red" ? "#f56e6e" :
+                            "#c8c8c8");
             ds.push({
                 range: new monaco.Range(s, 1, e, endCol),
                 options: {
@@ -354,12 +360,12 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
                     inlineClassName: inlineClass,
                     linesDecorationsClassName: gutterClass,
                     hoverMessage: [{ value: hover }],
-                    minimap: { color: "rgba(220,220,220,0.35)", position: 2 },
+                    minimap: {
+                        color: navColor,
+                        position: monaco.editor.MinimapPosition.Gutter
+                    },
                     overviewRuler: {
-                        color: (sev === "green" ? "rgba(80,200,100,0.9)" :
-                                sev === "yellow" ? "rgba(235,210,90,0.9)" :
-                                sev === "red" ? "rgba(245,110,110,0.9)" :
-                                "rgba(200,200,200,0.85)"),
+                        color: navColor,
                         position: monaco.editor.OverviewRulerLane.Full
                     }
                 }
