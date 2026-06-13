@@ -555,10 +555,10 @@ class BigOController:
     def _review_content_width(self) -> int:
         width = 340
         try:
-            width = self._ai_sidebar_text.viewport().width() - 40
+            width = self._ai_sidebar_text.viewport().width() - 28
         except Exception:
             pass
-        return max(240, min(520, width))
+        return max(240, min(560, width))
 
     def _complexity_chart_data_uri(self, counts: dict[str, int], width: int) -> str:
         """Нарисовать столбчатую диаграмму как PNG для QTextBrowser.
@@ -602,7 +602,8 @@ class BigOController:
             chart_classes.append("unknown")
         n_classes = len(chart_classes)
         slot_w = plot_w / max(1, n_classes)
-        bar_w = max(10, int(slot_w * 0.58))
+        bar_slot_cap = 31.0 if n_classes >= 10 else 34.0
+        bar_w = max(10, int(min(slot_w, bar_slot_cap) * 0.58))
 
         for idx, complexity in enumerate(chart_classes):
             count = counts.get(complexity, 0)
