@@ -22,8 +22,13 @@ if TYPE_CHECKING:
 _BRANCH_RE = re.compile(r"\b(if|elif|else)\b")
 _SORT_RE = re.compile(r"\bsort(ed)?\s*\(|qsort\s*\(")
 _LOG_RE = re.compile(r">>\s*1|/=\s*2|/2\b|mid\s*=|binary_search")
+_DYNAMIC_TEXT_RE = re.compile(
+    r"\b(eval|exec|getattr|globals|locals|__import__|compile)\s*\("
+    r"|importlib\s*\.\s*import_module",
+    re.IGNORECASE,
+)
 
-RULES_VERSION = "static-v5"
+RULES_VERSION = "static-v9"
 
 
 def _container_skip_result() -> AnalysisResult:
@@ -72,7 +77,9 @@ def _build_analysis_features(
         1 for c in block.calls if c == block.name
     )
 
-    uncertainty: list[str] = []
+    uncertainty: list[str] = list(indexed.uncertainty_flags or [])
+    if _DYNAMIC_TEXT_RE.search(code):
+        uncertainty.append("dynamic_call:runtime_dispatch")
     call_summaries: list[dict] = []
     project_call_count = 0
     external_call_count = 0
@@ -116,19 +123,26 @@ def _build_analysis_features(
             else:
                 external_call_count += 1
                 uncertainty.append(f"unresolved_call:{edge.call_name}")
-                call_summaries.append(
-                    {
-                        "name": edge.call_name,
-                        "kind": "external",
-                        "resolved": False,
-                    }
-                )
+                entry = {
+                    "name": edge.call_name,
+                    "call_name": edge.call_name,
+                    "kind": "external",
+                    "resolved": False,
+                }
+                sites = index_calls_by_name.get(edge.call_name, [])
+                if sites:
+                    entry.update(sites.pop(0))
+                call_summaries.append(entry)
 
     for name in block.calls:
         if name in seen_calls or name == block.name:
             continue
         kind = "self" if name == block.name else "unknown"
-        call_summaries.append({"name": name, "kind": kind})
+        entry = {"name": name, "call_name": name, "kind": kind}
+        sites = index_calls_by_name.get(name, [])
+        if sites:
+            entry.update(sites.pop(0))
+        call_summaries.append(entry)
         if kind != "self":
             external_call_count += 1
             uncertainty.append(f"unknown_call:{name}")
@@ -148,6 +162,9 @@ def _build_analysis_features(
 
     recursion_kind: str | None = None
     has_recursion = self_calls >= 1
+    if dependency_graph is not None and bid in getattr(dependency_graph, "recursive_block_ids", set()):
+        has_recursion = True
+        recursion_kind = "mutual"
     if self_calls >= 2:
         recursion_kind = "multi_branch"
     elif self_calls == 1:
@@ -175,8 +192,14 @@ def _build_analysis_features(
         has_log_pattern=has_log,
         has_sort_call=has_sort,
         self_call_count=self_calls,
+        container_operations=list(indexed.container_operations),
         loop_summaries=loop_summaries,
         call_summaries=call_summaries,
+        branch_summaries=list(indexed.branch_summaries),
+        import_summaries=list(indexed.import_summaries),
+        defined_symbols=list(indexed.defined_symbols),
+        local_symbols=list(indexed.local_symbols),
+        parameters=list(indexed.parameters),
         uncertainty_flags=sorted(set(uncertainty)),
     )
 
@@ -199,6 +222,94 @@ def _result(
         analyzer_kind="rule",
         needs_human_review=needs_human_review,
         features=features,
+        rules_version=RULES_VERSION,
+    )
+
+
+def _has_dynamic_or_invalid_syntax(f: BlockFeatures) -> bool:
+    return any(
+        flag == "syntax_error" or flag.startswith("dynamic_call:")
+        for flag in f.uncertainty_flags
+    )
+
+
+def _opaque_call_names(f: BlockFeatures) -> list[str]:
+    names: list[str] = []
+    for flag in f.uncertainty_flags:
+        if flag.startswith(("unknown_call:", "unresolved_call:")):
+            names.append(flag.split(":", 1)[1])
+    return names
+
+
+def _has_opaque_call_inside_loop(f: BlockFeatures) -> bool:
+    for call in f.call_summaries:
+        if call.get("kind") not in {"external", "unknown"}:
+            continue
+        if call.get("is_builtin_like"):
+            continue
+        try:
+            depth = int(call.get("inside_loop_depth") or 0)
+        except (TypeError, ValueError):
+            depth = 0
+        if depth > 0:
+            return True
+    return False
+
+
+def _needs_ai_before_static_rules(f: BlockFeatures) -> bool:
+    return _has_dynamic_or_invalid_syntax(f)
+
+
+def _needs_ai_after_static_rules(f: BlockFeatures) -> bool:
+    if _has_dynamic_or_invalid_syntax(f):
+        return True
+    flags = set(f.uncertainty_flags)
+    if "loop_bound_unknown" in flags and f.max_loop_depth > 0:
+        return True
+    if _has_opaque_call_inside_loop(f):
+        return True
+    opaque_calls = _opaque_call_names(f)
+    if f.max_loop_depth == 0 and not f.has_recursion and len(opaque_calls) >= 3:
+        return True
+    return False
+
+
+def _uncertain_external_result(
+    f: BlockFeatures, base_assumptions: list[str]
+) -> AnalysisResult:
+    flags = sorted(set(f.uncertainty_flags + ["needs_ai_or_human"]))
+    enriched = BlockFeatures(
+        loop_count=f.loop_count,
+        max_loop_depth=f.max_loop_depth,
+        branch_count=f.branch_count,
+        call_count=f.call_count,
+        project_call_count=f.project_call_count,
+        external_call_count=f.external_call_count,
+        has_recursion=f.has_recursion,
+        recursion_kind=f.recursion_kind,
+        has_sorting=f.has_sorting,
+        has_log_pattern=f.has_log_pattern,
+        has_sort_call=f.has_sort_call,
+        self_call_count=f.self_call_count,
+        container_operations=list(f.container_operations),
+        loop_summaries=list(f.loop_summaries),
+        call_summaries=list(f.call_summaries),
+        branch_summaries=list(f.branch_summaries),
+        import_summaries=list(f.import_summaries),
+        defined_symbols=list(f.defined_symbols),
+        local_symbols=list(f.local_symbols),
+        parameters=list(f.parameters),
+        uncertainty_flags=flags,
+    )
+    return AnalysisResult(
+        complexity="unknown",
+        reason="Block contains unresolved or dynamic behavior; AI fallback should estimate it.",
+        reasoning_summary="Block contains unresolved or dynamic behavior; AI fallback should estimate it.",
+        confidence="low",
+        assumptions=base_assumptions,
+        analyzer_kind="rule",
+        needs_human_review=True,
+        features=enriched,
         rules_version=RULES_VERSION,
     )
 
@@ -230,6 +341,9 @@ def _rule_analyze_local(block: CodeBlock, f: BlockFeatures) -> AnalysisResult:
             features=f,
         )
 
+    if _needs_ai_before_static_rules(f):
+        return _uncertain_external_result(f, base_assumptions)
+
     pattern = try_rule_patterns(block, f)
     if pattern is not None:
         flags = sorted(set(f.uncertainty_flags + pattern.uncertainty_flags))
@@ -249,6 +363,11 @@ def _rule_analyze_local(block: CodeBlock, f: BlockFeatures) -> AnalysisResult:
             container_operations=list(f.container_operations),
             loop_summaries=list(f.loop_summaries),
             call_summaries=list(f.call_summaries),
+            branch_summaries=list(f.branch_summaries),
+            import_summaries=list(f.import_summaries),
+            defined_symbols=list(f.defined_symbols),
+            local_symbols=list(f.local_symbols),
+            parameters=list(f.parameters),
             uncertainty_flags=flags,
         )
         return _result(
@@ -258,6 +377,9 @@ def _rule_analyze_local(block: CodeBlock, f: BlockFeatures) -> AnalysisResult:
             assumptions=base_assumptions + pattern.assumptions,
             features=pf,
         )
+
+    if _needs_ai_after_static_rules(f):
+        return _uncertain_external_result(f, base_assumptions)
 
     if f.max_loop_depth >= 3:
         return _result(
@@ -442,6 +564,11 @@ def _merge_with_project_callees(
         container_operations=list(features.container_operations),
         loop_summaries=list(features.loop_summaries),
         call_summaries=list(features.call_summaries),
+        branch_summaries=list(features.branch_summaries),
+        import_summaries=list(features.import_summaries),
+        defined_symbols=list(features.defined_symbols),
+        local_symbols=list(features.local_symbols),
+        parameters=list(features.parameters),
         uncertainty_flags=sorted(set(flags)),
     )
 
@@ -477,6 +604,11 @@ def _uncertain_many_calls(
         container_operations=list(f.container_operations),
         loop_summaries=list(f.loop_summaries),
         call_summaries=list(f.call_summaries),
+        branch_summaries=list(f.branch_summaries),
+        import_summaries=list(f.import_summaries),
+        defined_symbols=list(f.defined_symbols),
+        local_symbols=list(f.local_symbols),
+        parameters=list(f.parameters),
         uncertainty_flags=flags,
     )
     return AnalysisResult(

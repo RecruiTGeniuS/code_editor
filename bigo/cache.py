@@ -52,7 +52,7 @@ class BlockComplexityCache:
             return False
         complexity = row.get("complexity")
         reason = row.get("reason", "")
-        if not complexity:
+        if not complexity or complexity == "unknown":
             return False
         block.complexity = complexity
         block.reason = reason
@@ -60,7 +60,7 @@ class BlockComplexityCache:
         return True
 
     def upsert(self, block: CodeBlock) -> None:
-        if not block.complexity:
+        if not block.complexity or block.complexity == "unknown":
             return
         key = self.make_key(block)
         self._data[key] = {

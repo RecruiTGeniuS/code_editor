@@ -22,7 +22,7 @@ ANALYZABLE_KINDS = frozenset(
     }
 )
 
-NON_OVERLAY_COMPLEXITIES = frozenset({"N/A", "container", "unknown", None})
+NON_OVERLAY_COMPLEXITIES = frozenset({"N/A", "container", None})
 
 
 def is_analyzable_block(block: CodeBlock) -> bool:
@@ -59,7 +59,7 @@ def is_overlayable_block(block: CodeBlock) -> bool:
         return False
     if not block.complexity or block.complexity in NON_OVERLAY_COMPLEXITIES:
         return False
-    return block.complexity in BIG_O_CLASSES
+    return block.complexity in BIG_O_CLASSES or block.complexity == "unknown"
 
 
 def group_blocks_by_file(blocks: list[CodeBlock]) -> dict[str, list[CodeBlock]]:

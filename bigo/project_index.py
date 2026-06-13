@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import ast
 from collections import defaultdict
 
 from tree_sitter import Node, Parser
@@ -70,9 +71,57 @@ _KEYWORDS = {
     "delete", "elif", "def", "class", "print", "with", "except",
 }
 
+_BUILTIN_CONTAINER_CALLS = {
+    "all",
+    "any",
+    "deque",
+    "enumerate",
+    "heapify",
+    "heappop",
+    "heappush",
+    "len",
+    "max",
+    "min",
+    "range",
+    "set",
+    "sorted",
+    "sum",
+    "zip",
+}
+
+_CONTAINER_METHODS = {
+    "append",
+    "extend",
+    "insert",
+    "pop",
+    "remove",
+    "sort",
+    "add",
+    "clear",
+    "copy",
+    "discard",
+    "get",
+    "items",
+    "keys",
+    "setdefault",
+    "update",
+    "values",
+}
+
+_DYNAMIC_CALL_NAMES = {"eval", "exec", "getattr", "globals", "locals"}
+
 
 def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _normalized_source(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if stripped:
+            lines.append(re.sub(r"\s+", " ", stripped))
+    return "\n".join(lines)
 
 
 def _make_stable_id(
@@ -89,6 +138,12 @@ def _make_stable_id(
         f"{start_line}|{end_line}|{source_hash}"
     )
     return _sha1(payload)
+
+
+def _node_text(node: Node, source: bytes) -> str:
+    return source[node.start_byte : node.end_byte].decode(
+        "utf-8", errors="ignore"
+    ).strip()
 
 
 def _iter_source_files(root_path: str):
@@ -162,6 +217,25 @@ def _extract_signature(node: Node, source: bytes) -> str | None:
     return first[:200] if first else None
 
 
+def _extract_parameters(node: Node, source: bytes) -> list[str]:
+    params = node.child_by_field_name("parameters")
+    if params is None:
+        return []
+    names: list[str] = []
+
+    def walk(n: Node) -> None:
+        if n.type == "identifier":
+            name = _node_text(n, source)
+            if name and name not in names:
+                names.append(name)
+            return
+        for child in n.children:
+            walk(child)
+
+    walk(params)
+    return names
+
+
 def _body_line_range(node: Node, source: bytes, start_line: int, end_line: int):
     body = node.child_by_field_name("body")
     if body is None:
@@ -169,6 +243,13 @@ def _body_line_range(node: Node, source: bytes, start_line: int, end_line: int):
     body_start = body.start_point[0] + 1
     body_end = body.end_point[0] + 1
     return body_start, body_end
+
+
+def _body_byte_range(node: Node) -> tuple[int | None, int | None]:
+    body = node.child_by_field_name("body")
+    if body is None:
+        return (None, None)
+    return (body.start_byte, body.end_byte)
 
 
 def _call_name_from_call_node(node: Node, source: bytes) -> str | None:
@@ -200,6 +281,27 @@ def _call_name_from_call_node(node: Node, source: bytes) -> str | None:
     return raw or None
 
 
+def _call_function_node(node: Node) -> Node | None:
+    fn = node.child_by_field_name("function")
+    if fn is None:
+        fn = node.child_by_field_name("name")
+    if fn is not None:
+        return fn
+    for child in node.children:
+        if child.type in ("identifier", "attribute", "field_expression"):
+            return child
+    return None
+
+
+def _call_receiver(fn: Node | None, source: bytes) -> str | None:
+    if fn is None:
+        return None
+    raw = _node_text(fn, source)
+    if "." not in raw:
+        return None
+    return raw.rsplit(".", 1)[0].strip() or None
+
+
 def _loop_kind_from_node(node_type: str) -> str:
     if "while" in node_type or node_type == "do_statement":
         return "while"
@@ -208,11 +310,34 @@ def _loop_kind_from_node(node_type: str) -> str:
     return "loop"
 
 
-def _extract_loop_summaries(node: Node) -> list[dict]:
+def _loop_bound_hint(node: Node, source: bytes) -> str:
+    raw = _node_text(node, source)
+    if "while" in node.type:
+        if re.search(r"/=\s*2|//=\s*2|>>=\s*1|mid\s*=", raw):
+            return "logarithmic"
+        if re.search(r"\+=\s*1|-=\s*1|=\s*\w+\s*[+-]\s*1", raw):
+            return "linear"
+        return "unknown"
+    if "range(" in raw:
+        args = re.search(r"range\s*\((.*?)\)", raw, re.DOTALL)
+        if args and re.fullmatch(r"\s*\d+\s*", args.group(1)):
+            return "constant"
+        return "linear"
+    if re.search(r"\bin\s+\[.*\]|\bin\s+\(.*\)", raw, re.DOTALL):
+        return "constant"
+    return "data_dependent"
+
+
+def _extract_loop_summaries(node: Node, source: bytes) -> list[dict]:
     summaries: list[dict] = []
 
-    def walk(n: Node) -> None:
+    def walk(n: Node, depth: int, parent_index: int | None) -> None:
+        next_depth = depth
+        active_parent = parent_index
         if n.type in _LOOP_TYPES:
+            raw = _node_text(n, source)
+            idx = len(summaries)
+            bound_hint = _loop_bound_hint(n, source)
             summaries.append(
                 {
                     "kind": _loop_kind_from_node(n.type),
@@ -220,37 +345,73 @@ def _extract_loop_summaries(node: Node) -> list[dict]:
                     "end_line": n.end_point[0] + 1,
                     "start_byte": n.start_byte,
                     "end_byte": n.end_byte,
-                    "estimated_complexity": "O(n)",
+                    "nesting_depth": depth + 1,
+                    "parent_loop_index": parent_index,
+                    "raw_expression": raw.splitlines()[0] if raw else "",
+                    "bound_hint": bound_hint,
+                    "estimated_complexity": (
+                        "O(log n)" if bound_hint == "logarithmic"
+                        else "O(1)" if bound_hint == "constant"
+                        else "unknown" if bound_hint in {"unknown", "data_dependent"}
+                        else "O(n)"
+                    ),
+                    "has_break": bool(re.search(r"\bbreak\b", raw)),
+                    "has_continue": bool(re.search(r"\bcontinue\b", raw)),
+                    "has_return": bool(re.search(r"\breturn\b", raw)),
                 }
             )
+            next_depth = depth + 1
+            active_parent = idx
         for child in n.children:
-            walk(child)
+            walk(child, next_depth, active_parent)
 
-    walk(node)
+    walk(node, 0, None)
     return summaries
 
 
 def _extract_call_summaries(node: Node, source: bytes) -> list[dict]:
     summaries: list[dict] = []
 
-    def walk(n: Node) -> None:
+    def walk(n: Node, loop_depth: int) -> None:
+        next_depth = loop_depth + 1 if n.type in _LOOP_TYPES else loop_depth
         if n.type in _CALL_NODE_TYPES:
             name = _call_name_from_call_node(n, source)
             if name and name not in _KEYWORDS:
+                fn = _call_function_node(n)
+                raw_fn = _node_text(fn, source) if fn is not None else name
+                receiver = _call_receiver(fn, source)
+                raw = _node_text(n, source)
+                is_dynamic = name in _DYNAMIC_CALL_NAMES or (
+                    name == "getattr" and "," in raw
+                )
                 summaries.append(
                     {
                         "call_name": name,
                         "name": name,
+                        "raw_expression": raw,
+                        "receiver": receiver,
+                        "qualified_hint": raw_fn,
                         "start_line": n.start_point[0] + 1,
                         "end_line": n.end_point[0] + 1,
                         "start_byte": n.start_byte,
                         "end_byte": n.end_byte,
+                        "inside_loop_depth": loop_depth,
+                        "is_method": receiver is not None,
+                        "is_dynamic": is_dynamic,
+                        "is_builtin_like": (
+                            name in _BUILTIN_CONTAINER_CALLS
+                            or name in _CONTAINER_METHODS
+                        ),
+                        "is_project_candidate": (
+                            name not in _BUILTIN_CONTAINER_CALLS
+                            and name not in _CONTAINER_METHODS
+                        ),
                     }
                 )
         for child in n.children:
-            walk(child)
+            walk(child, next_depth)
 
-    walk(node)
+    walk(node, 0)
     return summaries
 
 
@@ -266,7 +427,12 @@ def _merge_call_names(*parts: list[str]) -> list[str]:
     seen: set[str] = set()
     for part in parts:
         for name in part:
-            if name in seen or name in _KEYWORDS:
+            if (
+                name in seen
+                or name in _KEYWORDS
+                or name in _BUILTIN_CONTAINER_CALLS
+                or name in _CONTAINER_METHODS
+            ):
                 continue
             seen.add(name)
             out.append(name)
@@ -309,6 +475,235 @@ def _loop_metrics(node: Node) -> tuple[int, int]:
     return total, max_depth
 
 
+def _extract_branch_summaries(node: Node, source: bytes) -> list[dict]:
+    out: list[dict] = []
+    branch_types = {
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "match_statement",
+        "case_clause",
+        "try_statement",
+        "except_clause",
+    }
+
+    def walk(n: Node) -> None:
+        if n.type in branch_types:
+            out.append(
+                {
+                    "kind": n.type,
+                    "start_line": n.start_point[0] + 1,
+                    "end_line": n.end_point[0] + 1,
+                    "raw_expression": _node_text(n, source).splitlines()[0],
+                }
+            )
+        for child in n.children:
+            walk(child)
+
+    walk(node)
+    return out
+
+
+def _extract_container_operations(node: Node, source: bytes) -> list[dict]:
+    out: list[dict] = []
+    calls = _extract_call_summaries(node, source)
+    for call in calls:
+        name = call.get("name")
+        receiver = call.get("receiver")
+        if name in _BUILTIN_CONTAINER_CALLS or name in _CONTAINER_METHODS:
+            op_type = "builtin" if receiver is None else "method"
+            out.append(
+                {
+                    "operation": name,
+                    "operation_type": op_type,
+                    "receiver": receiver,
+                    "line": call.get("start_line"),
+                    "raw_expression": call.get("raw_expression"),
+                    "inside_loop_depth": call.get("inside_loop_depth", 0),
+                }
+            )
+    raw = _node_text(node, source)
+    for lineno, line in enumerate(raw.splitlines(), start=node.start_point[0] + 1):
+        stripped = line.strip()
+        if " in " in stripped and not stripped.startswith(("for ", "async for ")):
+            out.append(
+                {
+                    "operation": "membership",
+                    "operation_type": "container",
+                    "line": lineno,
+                    "raw_expression": stripped,
+                }
+            )
+        if any(tok in stripped for tok in ("[", "{")) and " for " in stripped:
+            out.append(
+                {
+                    "operation": "comprehension",
+                    "operation_type": "container",
+                    "line": lineno,
+                    "raw_expression": stripped,
+                }
+            )
+    return out
+
+
+def _extract_python_imports(text: str) -> list[dict]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    imports: list[dict] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(
+                    {
+                        "kind": "import",
+                        "module": alias.name,
+                        "name": alias.name.split(".")[0],
+                        "alias": alias.asname,
+                        "line": node.lineno,
+                    }
+                )
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                imports.append(
+                    {
+                        "kind": "from_import",
+                        "module": module,
+                        "name": alias.name,
+                        "alias": alias.asname,
+                        "line": node.lineno,
+                    }
+                )
+    return imports
+
+
+def _extract_local_symbols_python(code: str) -> list[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+    return sorted(names)
+
+
+def _top_level_statement_ranges(text: str) -> list[tuple[int, int]]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    ranges: list[tuple[int, int]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
+            continue
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(getattr(node, "value", None), ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", None) or start
+        if start is not None and end is not None:
+            ranges.append((int(start), int(end)))
+    return ranges
+
+
+def _line_to_byte_offsets(text: str) -> list[int]:
+    offsets = [0]
+    total = 0
+    for line in text.splitlines(keepends=True):
+        total += len(line.encode("utf-8", errors="ignore"))
+        offsets.append(total)
+    return offsets
+
+
+def _extract_top_level_executable(
+    text: str,
+    source: bytes,
+    file_path: str,
+    lang_id: str,
+    file_imports: list[dict],
+    idx: int,
+) -> CodeBlock | None:
+    ranges = _top_level_statement_ranges(text)
+    if not ranges:
+        return None
+    start_line = min(r[0] for r in ranges)
+    end_line = max(r[1] for r in ranges)
+    lines = text.splitlines()
+    raw = "\n".join(lines[start_line - 1 : end_line])
+    if not raw.strip():
+        return None
+    offsets = _line_to_byte_offsets(text)
+    start_byte = offsets[start_line - 1] if start_line - 1 < len(offsets) else 0
+    end_byte = offsets[end_line] if end_line < len(offsets) else len(source)
+    source_hash = _sha1(raw)
+    stable_id = _make_stable_id(
+        file_path,
+        lang_id,
+        "top_level_executable",
+        "<top-level>",
+        start_line,
+        end_line,
+        source_hash,
+    )
+    synthetic_source = raw.encode("utf-8", errors="ignore")
+    parser = Parser(get_language(lang_id))
+    tree = parser.parse(synthetic_source)
+    root = tree.root_node
+    block = CodeBlock(
+        block_id=f"{file_path}#{idx}",
+        file_path=file_path,
+        language_id=lang_id,
+        kind="top_level_executable",
+        name="<top-level>",
+        start_line=start_line,
+        end_line=end_line,
+        source=raw,
+        source_hash=source_hash,
+        calls=_extract_calls(root, raw, synthetic_source),
+        stable_id=stable_id,
+        qualified_name="<top-level>",
+        signature=None,
+        normalized_hash=_sha1(_normalized_source(raw)),
+        start_byte=start_byte,
+        end_byte=end_byte,
+        body_start_byte=start_byte,
+        body_end_byte=end_byte,
+        body_start_line=start_line,
+        body_end_line=end_line,
+        error_state=_node_has_error(root),
+        is_container=False,
+    )
+    loop_count, max_depth = _loop_metrics(root)
+    block.features = _build_features(block)
+    block.features.loop_count = loop_count
+    block.features.max_loop_depth = max_depth
+    block.features.loop_summaries = _extract_loop_summaries(root, synthetic_source)
+    block.features.call_summaries = _extract_call_summaries(root, synthetic_source)
+    block.features.branch_summaries = _extract_branch_summaries(root, synthetic_source)
+    block.features.branch_count = len(block.features.branch_summaries)
+    block.features.container_operations = _extract_container_operations(root, synthetic_source)
+    block.features.import_summaries = list(file_imports)
+    block.features.local_symbols = _extract_local_symbols_python(raw)
+    block.features.defined_symbols = ["<top-level>"]
+    flags = set(block.features.uncertainty_flags)
+    if block.error_state:
+        flags.add("syntax_error")
+    for call in block.features.call_summaries:
+        if call.get("is_dynamic"):
+            flags.add(f"dynamic_call:{call.get('name')}")
+    block.features.uncertainty_flags = sorted(flags)
+    return block
+
+
 def _build_features(block: CodeBlock) -> BlockFeatures:
     code = block.source
     has_log = bool(
@@ -320,6 +715,7 @@ def _build_features(block: CodeBlock) -> BlockFeatures:
         has_log_pattern=has_log,
         has_sort_call=has_sort,
         self_call_count=self_calls,
+        parameters=list(block.parameters),
     )
 
 
@@ -330,24 +726,26 @@ def _extract_blocks_in_file(
     lang_id: str,
 ) -> list[CodeBlock]:
     blocks: list[CodeBlock] = []
+    by_stable: dict[str, CodeBlock] = {}
     idx = 0
+    full_text = source.decode("utf-8", errors="ignore")
+    file_imports = _extract_python_imports(full_text) if lang_id == "python" else []
 
     def visit(
         node: Node,
         qual_stack: list[str],
-        parent_container_id: str | None,
-        container_children: dict[str, list[str]],
+        parent_block_id: str | None,
     ) -> None:
         nonlocal idx
         if node.type not in _BLOCK_TYPES:
             for child in node.children:
-                visit(child, qual_stack, parent_container_id, container_children)
+                visit(child, qual_stack, parent_block_id)
             return
 
         raw = source[node.start_byte : node.end_byte].decode("utf-8", errors="ignore")
         if not raw.strip():
             for child in node.children:
-                visit(child, qual_stack, parent_container_id, container_children)
+                visit(child, qual_stack, parent_block_id)
             return
 
         start_line = node.start_point[0] + 1
@@ -355,12 +753,23 @@ def _extract_blocks_in_file(
         name = _best_name(node, source)
         is_container = node.type in _CONTAINER_TYPES
         kind = _normalize_kind(node.type, is_container)
+        parent_block = by_stable.get(parent_block_id) if parent_block_id else None
+        if (
+            not is_container
+            and parent_block is not None
+            and parent_block.kind == "class"
+            and kind == "function"
+        ):
+            kind = "constructor" if name == "__init__" else "method"
         source_hash = _sha1(raw)
+        normalized_hash = _sha1(_normalized_source(raw))
         qualified = _qualified_name(name, qual_stack, is_container)
         signature = _extract_signature(node, source)
+        parameters = _extract_parameters(node, source)
         body_start_line, body_end_line = _body_line_range(
             node, source, start_line, end_line
         )
+        body_start_byte, body_end_byte = _body_byte_range(node)
         stable_id = _make_stable_id(
             file_path, lang_id, kind, name, start_line, end_line, source_hash
         )
@@ -378,11 +787,15 @@ def _extract_blocks_in_file(
             source_hash=source_hash,
             calls=calls,
             stable_id=stable_id,
-            parent_block_id=parent_container_id,
+            parent_block_id=parent_block_id,
             qualified_name=qualified,
             signature=signature,
+            parameters=parameters,
+            normalized_hash=normalized_hash,
             start_byte=node.start_byte,
             end_byte=node.end_byte,
+            body_start_byte=body_start_byte,
+            body_end_byte=body_end_byte,
             body_start_line=body_start_line,
             body_end_line=body_end_line,
             error_state=_node_has_error(node),
@@ -392,29 +805,50 @@ def _extract_blocks_in_file(
         block.features = _build_features(block)
         block.features.loop_count = loop_count
         block.features.max_loop_depth = max_depth
-        block.features.loop_summaries = _extract_loop_summaries(node)
+        block.features.loop_summaries = _extract_loop_summaries(node, source)
         block.features.call_summaries = _extract_call_summaries(node, source)
+        block.features.branch_summaries = _extract_branch_summaries(node, source)
+        block.features.branch_count = len(block.features.branch_summaries)
+        block.features.container_operations = _extract_container_operations(node, source)
+        block.features.import_summaries = list(file_imports)
+        block.features.local_symbols = _extract_local_symbols_python(raw) if lang_id == "python" else []
+        block.features.defined_symbols = [name] if name else []
+        block.features.parameters = list(parameters)
+        uncertainty = set(block.features.uncertainty_flags)
+        if block.error_state:
+            uncertainty.add("syntax_error")
+        for loop in block.features.loop_summaries:
+            if loop.get("bound_hint") in {"unknown", "data_dependent"}:
+                uncertainty.add(f"loop_bound_{loop.get('bound_hint')}")
+        for call in block.features.call_summaries:
+            if call.get("is_dynamic"):
+                uncertainty.add(f"dynamic_call:{call.get('name')}")
+            if call.get("is_method") and not call.get("receiver"):
+                uncertainty.add(f"unknown_receiver:{call.get('name')}")
+        block.features.uncertainty_flags = sorted(uncertainty)
 
         blocks.append(block)
+        by_stable[stable_id] = block
         idx += 1
 
-        if parent_container_id:
-            container_children.setdefault(parent_container_id, []).append(stable_id)
+        if parent_block_id and parent_block_id in by_stable:
+            by_stable[parent_block_id].children_ids.append(stable_id)
 
         if is_container:
             child_qual = [name]
             child_parent = stable_id
-            child_children: list[str] = []
-            container_children[stable_id] = child_children
             for child in node.children:
-                visit(child, child_qual, child_parent, container_children)
-            block.children_ids = child_children
+                visit(child, child_qual, child_parent)
         else:
             child_qual = qual_stack + [name]
             for child in node.children:
-                visit(child, child_qual, parent_container_id, container_children)
+                visit(child, child_qual, stable_id)
 
-    visit(tree.root_node, [], None, {})
+    visit(tree.root_node, [], None)
+    if lang_id == "python":
+        top_level = _extract_top_level_executable(full_text, source, file_path, lang_id, file_imports, idx)
+        if top_level is not None:
+            blocks.append(top_level)
     return blocks
 
 

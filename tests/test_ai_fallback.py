@@ -61,12 +61,11 @@ def test_build_llm_block_payload_structure():
     )
     payload = build_llm_block_payload(block, rule)
     assert payload["task"] == "estimate_upper_bound_big_o"
-    assert payload["block_name"] == "orchestrate"
-    assert payload["called_names"] == block.calls
-    assert payload["rule_based_result"]["needs_human_review"] is True
+    assert payload["name"] == "orchestrate"
+    assert payload["rule"]["needs_human_review"] is True
     assert "instructions" in payload
-    assert "source_excerpt" in payload
-    assert "unknown только" in payload["instructions"] or "Возвращай unknown только" in payload["instructions"]
+    assert "source" in payload
+    assert "unknown" in payload["instructions"]
 
 
 def test_parse_valid_llm_json():
@@ -87,7 +86,28 @@ def test_parse_valid_llm_json():
     assert result.confidence == "medium"
     assert result.optimization_advice == ["Рассмотреть кэш"]
     assert result.model_id == "test-model"
-    assert result.prompt_version == "v1"
+    assert result.prompt_version == "v3-forced-estimate"
+
+
+def test_parse_unknown_llm_json_gets_conservative_estimate():
+    rule = AnalysisResult(
+        complexity="unknown",
+        confidence="low",
+        features=BlockFeatures(call_count=2, external_call_count=2),
+    )
+    result = parse_llm_response_to_analysis_result(
+        {
+            "complexity": "unknown",
+            "confidence": "low",
+            "needs_human_review": True,
+            "reasoning_summary": "dynamic calls",
+        },
+        model_id="test-model",
+        rule_result=rule,
+    )
+    assert result.complexity == "O(n)"
+    assert result.confidence == "low"
+    assert result.needs_human_review is True
 
 
 def test_extract_json_from_markdown_fence():

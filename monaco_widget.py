@@ -342,7 +342,8 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
             var gutterClass = "bigo-gutter-" + sev;
             var s = Math.max(1, Math.min(maxLine, Number(r.startLine || 1)));
             var e = Math.max(s, Math.min(maxLine, Number(r.endLine || s)));
-            var endCol = model.getLineMaxColumn(e);
+            var rangeEndLine = e < maxLine ? e + 1 : e;
+            var rangeEndCol = e < maxLine ? 1 : model.getLineMaxColumn(e);
             var lbl = "[" + (r.label || "O(?)") + "]";
             var hover = (r.hover || r.label || "Big-O");
             // Minimap стабильнее принимает hex-цвета, чем rgba(...).
@@ -352,7 +353,7 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
                             sev === "red" ? "#f56e6e" :
                             "#c8c8c8");
             ds.push({
-                range: new monaco.Range(s, 1, e, endCol),
+                range: new monaco.Range(s, 1, rangeEndLine, rangeEndCol),
                 options: {
                     isWholeLine: true,
                     className: rangeClass,
@@ -473,7 +474,7 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
                     dom.appendChild(btn);
                 }
                 var zid = accessor.addZone({
-                    afterLineNumber: Math.max(1, z.line - 1),
+                    afterLineNumber: Math.max(0, z.line - 1),
                     heightInPx: 24,
                     suppressMouseDown: true,
                     domNode: dom

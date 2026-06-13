@@ -6,6 +6,8 @@ from .models import BIG_O_ORDER, AnalysisResult, CodeBlock
 
 
 def complexity_color_class(complexity: str | None) -> str:
+    if complexity in {None, "", "unknown"}:
+        return "gray"
     if complexity in {"O(1)", "O(log n)"}:
         return "green"
     if complexity == "O(n)":

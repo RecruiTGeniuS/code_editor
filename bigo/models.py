@@ -58,6 +58,11 @@ class BlockFeatures:
     container_operations: list[dict] = field(default_factory=list)
     loop_summaries: list[dict] = field(default_factory=list)
     call_summaries: list[dict] = field(default_factory=list)
+    branch_summaries: list[dict] = field(default_factory=list)
+    import_summaries: list[dict] = field(default_factory=list)
+    defined_symbols: list[str] = field(default_factory=list)
+    local_symbols: list[str] = field(default_factory=list)
+    parameters: list[str] = field(default_factory=list)
     uncertainty_flags: list[str] = field(default_factory=list)
     # Legacy-поля (используются static_analyzer и project_index v1).
     has_sort_call: bool = False
@@ -85,8 +90,12 @@ class CodeBlock:
     parent_block_id: str | None = None
     qualified_name: str | None = None
     signature: str | None = None
+    parameters: list[str] = field(default_factory=list)
+    normalized_hash: str | None = None
     start_byte: int | None = None
     end_byte: int | None = None
+    body_start_byte: int | None = None
+    body_end_byte: int | None = None
     body_start_line: int | None = None
     body_end_line: int | None = None
     error_state: bool = False
@@ -123,6 +132,9 @@ class AnalysisResult:
     model_id: str | None = None
     prompt_version: str | None = None
     rules_version: str | None = None
+    cache_key: str | None = None
+    dependency_hash: str | None = None
+    payload_hash: str | None = None
     features: BlockFeatures | None = None
     optimization_advice: list[str] = field(default_factory=list)
 
@@ -169,6 +181,8 @@ class ProjectAnalysis:
     ai_llm_errors: int = 0
     ollama_available: bool | None = None
     block_results: dict[str, "AnalysisResult"] = field(default_factory=dict)
+    storage_path: str | None = None
+    project_recommendations: dict[str, str] = field(default_factory=dict)
 
     def complexity_counts(self) -> dict[str, int]:
         from .block_utils import analyzable_blocks

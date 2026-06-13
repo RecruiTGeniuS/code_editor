@@ -14,6 +14,7 @@ import base64
 import html
 import json
 import os
+import threading
 from typing import Callable
 
 from PySide6.QtCore import (
@@ -37,9 +38,11 @@ from PySide6.QtWidgets import (
 
 from bigo.block_review import build_block_review
 from bigo.block_utils import analyzable_blocks
+from bigo.dependency_graph import block_graph_id
 from bigo.models import BIG_O_CLASSES, AnalysisResult, CodeBlock
 from bigo.orchestrator import BigOOrchestrator
 from bigo.overlay_model import complexity_color_class, to_monaco_decorations
+from bigo.project_recommendations import pick_project_recommendation_blocks
 from monaco_widget import CustomMonaco
 from tab_manager import TabManager
 
@@ -134,6 +137,7 @@ class BigOController:
         self._active_block_review_id: str | None = None
         self._spinner_step = 0
         self._last_status_message = ""
+        self._last_prewarm_model: str | None = None
 
         self._spinner_timer = QTimer(parent)
         self._spinner_timer.setInterval(350)
@@ -141,6 +145,7 @@ class BigOController:
 
         self._orchestrator: BigOOrchestrator | None = None
         self._rebuild_orchestrator()
+        self._prewarm_ai_model()
 
         try:
             self._editor.block_review_requested.connect(self.review_block)
@@ -213,6 +218,24 @@ class BigOController:
         self.use_ai = use_ai
         self.ai_model = ai_model.strip() or "qwen2.5-coder:7b"
         self.ai_timeout = max(5, int(ai_timeout))
+        self._prewarm_ai_model()
+
+    def _prewarm_ai_model(self) -> None:
+        model = (self.ai_model or "").strip()
+        if not model or model == self._last_prewarm_model:
+            return
+        self._last_prewarm_model = model
+
+        def worker() -> None:
+            try:
+                from bigo.ollama_client import OllamaBigOClient
+
+                client = OllamaBigOClient(model=model, timeout_s=min(self.ai_timeout, 20))
+                client.prewarm()
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _rebuild_orchestrator(self) -> None:
         old = self._orchestrator
@@ -359,9 +382,12 @@ class BigOController:
     @staticmethod
     def _count_complexities(blocks: list[CodeBlock]) -> dict[str, int]:
         counts = {k: 0 for k in BIG_O_CLASSES}
+        counts["unknown"] = 0
         for block in blocks:
             if block.complexity in counts:
                 counts[block.complexity] += 1
+            elif block.complexity in (None, "unknown"):
+                counts["unknown"] += 1
         return counts
 
     @staticmethod
@@ -371,23 +397,7 @@ class BigOController:
     def _pick_project_recommendations(
         self, blocks: list[CodeBlock], limit: int = 5
     ) -> list[CodeBlock]:
-        rank = {name: i for i, name in enumerate(BIG_O_CLASSES)}
-
-        def score(block: CodeBlock) -> tuple[int, int, int, int]:
-            complexity_rank = rank.get(block.complexity or "", -1)
-            needs_review = 1 if block.complexity in (None, "unknown") else 0
-            loop_depth = getattr(block.features, "max_loop_depth", 0) or 0
-            call_count = getattr(block.features, "call_count", 0) or 0
-            return (complexity_rank, needs_review, loop_depth, call_count)
-
-        candidates = [
-            b
-            for b in blocks
-            if b.complexity in {"O(n^2)", "O(n^2 log n)", "O(n^3)", "O(2^n)", "O(n!)"}
-            or b.complexity in (None, "unknown")
-            or getattr(b.features, "max_loop_depth", 0) >= 2
-        ]
-        return sorted(candidates, key=score, reverse=True)[:limit]
+        return pick_project_recommendation_blocks(blocks, limit)
 
     def _project_review_summary(
         self, analyzed: list[CodeBlock], counts: dict[str, int]
@@ -424,7 +434,9 @@ class BigOController:
         )
 
     @staticmethod
-    def _recommendation_text(block: CodeBlock) -> str:
+    def _recommendation_text(block: CodeBlock, ai_text: str | None = None) -> str:
+        if ai_text:
+            return ai_text
         f = block.features
         if block.complexity in {"O(2^n)", "O(n!)"} or f.has_recursion:
             return "Проверить рекурсию и повторные вычисления; рассмотреть memoization или итеративный DP."
@@ -448,6 +460,7 @@ class BigOController:
             "O(n^3)": "n³",
             "O(2^n)": "2ⁿ",
             "O(n!)": "n!",
+            "unknown": "?",
         }
         return labels.get(complexity, complexity)
 
@@ -496,11 +509,14 @@ class BigOController:
         painter.drawText(0, top - 2, left - 5, 14, Qt.AlignRight, str(max_count))
         painter.drawText(0, baseline - 7, left - 5, 14, Qt.AlignRight, "0")
 
-        n_classes = len(BIG_O_CLASSES)
+        chart_classes = list(BIG_O_CLASSES)
+        if counts.get("unknown", 0):
+            chart_classes.append("unknown")
+        n_classes = len(chart_classes)
         slot_w = plot_w / max(1, n_classes)
         bar_w = max(10, int(slot_w * 0.58))
 
-        for idx, complexity in enumerate(BIG_O_CLASSES):
+        for idx, complexity in enumerate(chart_classes):
             count = counts.get(complexity, 0)
             bar_h = int((count / max_count) * (plot_h - 16)) if count else 3
             x = int(left + idx * slot_w + (slot_w - bar_w) / 2)
@@ -579,19 +595,21 @@ class BigOController:
         analyzed = analyzable_blocks(result.all_blocks)
         counts = self._count_complexities(analyzed)
         recommendations = self._pick_project_recommendations(analyzed)
+        ai_recommendations = getattr(result, "project_recommendations", {}) or {}
         chart_width = self._review_content_width()
         self._project_review_chart_width = chart_width
         chart_uri = self._complexity_chart_data_uri(counts, chart_width)
 
         rec_items: list[str] = []
         for block in recommendations:
-            bid = next(
-                (k for k, v in self._blocks_by_id.items() if v is block),
-                block.stable_id or block.block_id,
-            )
+            bid = block_graph_id(block)
             label = self._block_label(block)
             file_name = os.path.basename(block.file_path)
             complexity = block.complexity or "unknown"
+            recommendation = self._recommendation_text(
+                block,
+                ai_recommendations.get(bid),
+            )
             rec_items.append(
                 f"""
                 <div class="rec-card">
@@ -602,7 +620,7 @@ class BigOController:
                     {html.escape(file_name)}:{block.start_line}-{block.end_line}
                     · {html.escape(complexity)}
                   </div>
-                  <div class="rec-text">{html.escape(self._recommendation_text(block))}</div>
+                  <div class="rec-text">{html.escape(recommendation)}</div>
                 </div>
                 """
             )
@@ -850,6 +868,18 @@ class BigOController:
         self._block_review_history.clear()
         self._block_review_order.clear()
         self._active_block_review_id = None
+        result = self._last_project_result
+        storage_path = getattr(result, "storage_path", None) if result is not None else None
+        root_path = getattr(result, "root_path", None) if result is not None else None
+        if storage_path and root_path:
+            try:
+                from bigo.storage import BigoStorage
+
+                storage = BigoStorage(root_path, storage_path)
+                storage.delete_block_reviews()
+                storage.close()
+            except Exception:
+                pass
         self._set_block_tab_visible(False)
         self.show_project_review_tab()
 
@@ -988,6 +1018,23 @@ class BigOController:
             use_ai_hint=self.use_ai,
             ai_available=self._ollama_available_last,
         )
+        result = self._last_project_result
+        storage_path = getattr(result, "storage_path", None) if result is not None else None
+        root_path = getattr(result, "root_path", None) if result is not None else None
+        if storage_path and root_path:
+            try:
+                from bigo.storage import BigoStorage
+
+                storage = BigoStorage(root_path, storage_path)
+                storage.save_block_review(
+                    block,
+                    text,
+                    source_kind="local",
+                    model_id=getattr(analysis, "model_id", None) if analysis else None,
+                )
+                storage.close()
+            except Exception:
+                pass
         self._show_ai_sidebar()
         self._block_review_history[block_id] = text
         if block_id not in self._block_review_order:
