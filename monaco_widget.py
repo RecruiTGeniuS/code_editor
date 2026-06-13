@@ -48,6 +48,177 @@ _MONACO_CURSOR_POS_JS = """
 })()
 """
 
+_MONACO_SELECTION_ACTION_JS = r"""
+(function() {
+    try {
+        if (typeof monaco === "undefined" || !monaco.editor) return;
+        var eds = monaco.editor.getEditors();
+        if (!eds || eds.length === 0) return;
+        var ed = eds[0];
+        var model = ed.getModel();
+        if (!model) return;
+
+        if (!document.getElementById("bigo-selection-action-style")) {
+            var st = document.createElement("style");
+            st.id = "bigo-selection-action-style";
+            st.textContent = `
+            .bigo-selection-action-btn {
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              height: 24px;
+              padding: 0 9px;
+              border: 1px solid rgba(150, 180, 240, 0.35);
+              border-radius: 6px;
+              background: rgba(35, 38, 45, 0.92);
+              color: rgb(230, 235, 255);
+              font-family: "Segoe UI", Arial, sans-serif;
+              font-size: 11px;
+              cursor: pointer;
+              box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+              opacity: 0;
+              transition: opacity 120ms ease, background 120ms ease;
+              pointer-events: auto;
+              white-space: nowrap;
+              z-index: 90;
+            }
+            .bigo-selection-action-btn.visible { opacity: 1; }
+            .bigo-selection-action-btn:hover {
+              background: rgba(70, 80, 105, 0.98);
+            }
+            `;
+            document.head.appendChild(st);
+        }
+
+        function normalizedSelection() {
+            var currentModel = ed.getModel();
+            var sel = ed.getSelection();
+            if (!currentModel || !sel || sel.isEmpty()) return null;
+            var s = Math.min(sel.startLineNumber, sel.endLineNumber);
+            var e = Math.max(sel.startLineNumber, sel.endLineNumber);
+            var maxLine = currentModel.getLineCount();
+            s = Math.max(1, Math.min(maxLine, s));
+            e = Math.max(s, Math.min(maxLine, e));
+            return { startLine: s, endLine: e };
+        }
+
+        function ensureWidget() {
+            if (window.__bigoSelectionWidget) return window.__bigoSelectionWidget;
+            var btn = document.createElement("button");
+            btn.className = "bigo-selection-action-btn";
+            btn.type = "button";
+            btn.textContent = "Проанализировать сложность";
+            btn.setAttribute("title", "Проанализировать сложность выделенных строк");
+            btn.addEventListener("mousedown", function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            btn.addEventListener("pointerdown", function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            btn.addEventListener("click", function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var currentModel = ed.getModel();
+                var range = normalizedSelection();
+                if (!currentModel || !range) return;
+                var sourceRange = new monaco.Range(
+                    range.startLine,
+                    1,
+                    range.endLine,
+                    currentModel.getLineMaxColumn(range.endLine)
+                );
+                var payload = {
+                    startLine: range.startLine,
+                    endLine: range.endLine,
+                    source: currentModel.getValueInRange(sourceRange),
+                    languageId: currentModel.getLanguageId()
+                };
+                try {
+                    var iframe = document.createElement("iframe");
+                    iframe.style.display = "none";
+                    iframe.setAttribute("aria-hidden", "true");
+                    iframe.src = "bigo-selection:/" + encodeURIComponent(JSON.stringify(payload));
+                    document.body.appendChild(iframe);
+                    setTimeout(function() {
+                        try { document.body.removeChild(iframe); } catch (err) {}
+                    }, 120);
+                    hideWidget();
+                } catch (err) {
+                    console.warn("[bigo] selection nav failed:", err);
+                }
+            });
+            var widget = {
+                _domNode: btn,
+                _position: null,
+                getId: function() { return "bigo.selection.action"; },
+                getDomNode: function() { return btn; },
+                getPosition: function() {
+                    if (!widget._position) return null;
+                    return {
+                        position: widget._position,
+                        preference: [
+                            monaco.editor.ContentWidgetPositionPreference.EXACT,
+                            monaco.editor.ContentWidgetPositionPreference.ABOVE,
+                            monaco.editor.ContentWidgetPositionPreference.BELOW
+                        ]
+                    };
+                }
+            };
+            ed.addContentWidget(widget);
+            window.__bigoSelectionWidget = widget;
+            return widget;
+        }
+
+        function hideWidget() {
+            var widget = window.__bigoSelectionWidget;
+            if (!widget) return;
+            widget._position = null;
+            widget._domNode.classList.remove("visible");
+            try { ed.layoutContentWidget(widget); } catch (e) {}
+        }
+
+        function updateWidget() {
+            var currentModel = ed.getModel();
+            var range = normalizedSelection();
+            if (!currentModel || !range) {
+                hideWidget();
+                return;
+            }
+            var widget = ensureWidget();
+            widget._position = {
+                lineNumber: range.startLine,
+                column: currentModel.getLineMaxColumn(range.startLine)
+            };
+            widget._domNode.classList.add("visible");
+            ed.layoutContentWidget(widget);
+        }
+
+        if (!window.__bigoSelectionActionAttached) {
+            window.__bigoSelectionActionAttached = true;
+            ed.onDidChangeCursorSelection(function() {
+                window.requestAnimationFrame(updateWidget);
+            });
+            ed.onDidChangeModel(function() {
+                setTimeout(function() {
+                    hideWidget();
+                    model = ed.getModel();
+                }, 0);
+            });
+            ed.onDidScrollChange(function() {
+                window.requestAnimationFrame(updateWidget);
+            });
+            ed.onDidLayoutChange(function() {
+                window.requestAnimationFrame(updateWidget);
+            });
+        }
+        ensureWidget();
+        updateWidget();
+    } catch (e) {}
+})()
+"""
+
 _MONACO_STICKY_SCROLL_JS = """
 (function() {
     try {
@@ -293,7 +464,7 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
               justify-content: center;
               padding: 0;
               transition: opacity 120ms ease, background 120ms ease;
-              transform: translateY(2px);
+              transform: translateY(0);
               position: relative;
               z-index: 81;
               pointer-events: auto;
@@ -308,6 +479,32 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
               width: 15px;
               height: 15px;
               pointer-events: none;
+            }
+            .bigo-zone-remove-btn {
+              width: 22px;
+              height: 22px;
+              border: 1px solid transparent;
+              border-radius: 7px;
+              background: transparent;
+              color: #ffb8b8;
+              box-shadow: none;
+              opacity: 0.82;
+              cursor: pointer;
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              padding: 0;
+              transition: opacity 120ms ease, background 120ms ease;
+              transform: translateY(0);
+              position: relative;
+              z-index: 81;
+              pointer-events: auto;
+              font-size: 16px;
+              line-height: 22px;
+            }
+            .bigo-zone-remove-btn:hover {
+              opacity: 1;
+              background: rgba(245, 110, 110, 0.20);
             }
             .bigo-zone-review-fallback {
               color: #d8e0ee;
@@ -342,8 +539,8 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
             var gutterClass = "bigo-gutter-" + sev;
             var s = Math.max(1, Math.min(maxLine, Number(r.startLine || 1)));
             var e = Math.max(s, Math.min(maxLine, Number(r.endLine || s)));
-            var rangeEndLine = e < maxLine ? e + 1 : e;
-            var rangeEndCol = e < maxLine ? 1 : model.getLineMaxColumn(e);
+            var rangeEndLine = e;
+            var rangeEndCol = model.getLineMaxColumn(e);
             var lbl = "[" + (r.label || "O(?)") + "]";
             var hover = (r.hover || r.label || "Big-O");
             // Minimap стабильнее принимает hex-цвета, чем rgba(...).
@@ -379,7 +576,8 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
                     label: lbl,
                     blockId: r.blockId || "",
                     confidence: r.confidence || "",
-                    analyzerKind: r.analyzerKind || ""
+                    analyzerKind: r.analyzerKind || "",
+                    removable: !!r.removable
                 });
             }
         }
@@ -472,6 +670,46 @@ _BIG_O_APPLY_JS_TEMPLATE = r"""
                         }
                     });
                     dom.appendChild(btn);
+                }
+                if (z.blockId && z.removable) {
+                    var removeBtn = document.createElement('button');
+                    removeBtn.className = 'bigo-zone-remove-btn';
+                    removeBtn.type = 'button';
+                    removeBtn.dataset.blockId = z.blockId;
+                    removeBtn.setAttribute('title', 'Убрать анализ выделения');
+                    removeBtn.setAttribute('aria-label', 'Убрать анализ выделения');
+                    removeBtn.textContent = '×';
+                    removeBtn.addEventListener('mousedown', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    });
+                    removeBtn.addEventListener('pointerdown', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    });
+                    removeBtn.addEventListener('mouseup', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    });
+                    removeBtn.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        var bid = this.dataset.blockId || '';
+                        if (!bid) return;
+                        try {
+                            var iframe = document.createElement('iframe');
+                            iframe.style.display = 'none';
+                            iframe.setAttribute('aria-hidden', 'true');
+                            iframe.src = 'bigo-remove-selection:/' + encodeURIComponent(bid);
+                            document.body.appendChild(iframe);
+                            setTimeout(function() {
+                                try { document.body.removeChild(iframe); } catch (err) {}
+                            }, 120);
+                        } catch (err) {
+                            console.warn('[bigo] remove selection nav failed:', err);
+                        }
+                    });
+                    dom.appendChild(removeBtn);
                 }
                 var zid = accessor.addZone({
                     afterLineNumber: Math.max(0, z.line - 1),
@@ -788,6 +1026,28 @@ class _BigOReviewPage(MonacoPage):
                 if self._bigo_bridge is not None and block_id:
                     self._bigo_bridge.block_review_requested.emit(block_id)
                 return False
+            if url.scheme() == "bigo-selection":
+                raw = url.path() or url.host() or ""
+                if raw.startswith("/"):
+                    raw = raw[1:]
+                try:
+                    payload_json = unquote(raw)
+                except Exception:
+                    payload_json = raw
+                if self._bigo_bridge is not None and payload_json:
+                    self._bigo_bridge.selection_analysis_requested.emit(payload_json)
+                return False
+            if url.scheme() == "bigo-remove-selection":
+                raw = url.path() or url.host() or ""
+                if raw.startswith("/"):
+                    raw = raw[1:]
+                try:
+                    block_id = unquote(raw)
+                except Exception:
+                    block_id = raw
+                if self._bigo_bridge is not None and block_id:
+                    self._bigo_bridge.selection_block_remove_requested.emit(block_id)
+                return False
         except Exception:
             pass
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
@@ -795,6 +1055,8 @@ class _BigOReviewPage(MonacoPage):
 
 class CustomMonaco(Monaco):
     block_review_requested = Signal(str)
+    selection_analysis_requested = Signal(str)
+    selection_block_remove_requested = Signal(str)
 
     def __init__(self, parent=None):
         # Мост создаём заранее без parent — потом отдадим self как parent,
@@ -802,14 +1064,27 @@ class CustomMonaco(Monaco):
         # передачу bridge в _load_editor (его вызывает Monaco.__init__).
         self._bigo_bridge = BigOBridge()
         self._bigo_bridge.block_review_requested.connect(self._on_review_requested)
+        self._bigo_bridge.selection_analysis_requested.connect(
+            self._on_selection_analysis_requested
+        )
+        self._bigo_bridge.selection_block_remove_requested.connect(
+            self._on_selection_block_remove_requested
+        )
         super().__init__(parent=parent)
         self._bigo_bridge.setParent(self)
         self._review_layer_installed = False
         self.initialized.connect(self._install_big_o_review_layer)
         self.initialized.connect(self._configure_sticky_scroll)
+        self.initialized.connect(self._install_selection_action_layer)
 
     def _on_review_requested(self, block_id: str) -> None:
         self.block_review_requested.emit(block_id)
+
+    def _on_selection_analysis_requested(self, payload_json: str) -> None:
+        self.selection_analysis_requested.emit(payload_json)
+
+    def _on_selection_block_remove_requested(self, block_id: str) -> None:
+        self.selection_block_remove_requested.emit(block_id)
 
     def _load_editor(self):
         # Подменяем MonacoPage на наш subclass до setHtml. Канал qtmonaco
@@ -844,6 +1119,9 @@ class CustomMonaco(Monaco):
     def _configure_sticky_scroll(self) -> None:
         """Оставить Sticky Scroll как в VS Code: класс + текущий метод, не глубже."""
         self.page().runJavaScript(_MONACO_STICKY_SCROLL_JS)
+
+    def _install_selection_action_layer(self) -> None:
+        self.page().runJavaScript(_MONACO_SELECTION_ACTION_JS)
 
     def set_big_o_review_icon(self, data_uri: str) -> None:
         """Установить data URI иконки для кнопки рецензии (icons/ai_ricense_block.png)."""

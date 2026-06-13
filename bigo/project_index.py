@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import ast
+import textwrap
 from collections import defaultdict
 
 from tree_sitter import Node, Parser
@@ -593,6 +594,205 @@ def _extract_local_symbols_python(code: str) -> list[str]:
     return sorted(names)
 
 
+def _ast_call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _ast_receiver(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Attribute):
+        value = node.value
+        if isinstance(value, ast.Name):
+            return value.id
+        if isinstance(value, ast.Attribute):
+            parts: list[str] = []
+            cur: ast.AST = value
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.append(cur.id)
+                return ".".join(reversed(parts))
+    return None
+
+
+def _ast_call_summaries(tree: ast.AST, line_offset: int) -> list[dict]:
+    out: list[dict] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.loop_depth = 0
+
+        def visit_For(self, node: ast.For) -> None:  # noqa: N802
+            self.loop_depth += 1
+            self.generic_visit(node)
+            self.loop_depth -= 1
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+            self.visit_For(node)
+
+        def visit_While(self, node: ast.While) -> None:  # noqa: N802
+            self.loop_depth += 1
+            self.generic_visit(node)
+            self.loop_depth -= 1
+
+        def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+            name = _ast_call_name(node.func)
+            if name and name not in _KEYWORDS:
+                receiver = _ast_receiver(node.func)
+                start = line_offset + int(getattr(node, "lineno", 1))
+                end = line_offset + int(getattr(node, "end_lineno", getattr(node, "lineno", 1)))
+                is_builtin_like = name in _BUILTIN_CONTAINER_CALLS or name in _CONTAINER_METHODS
+                out.append(
+                    {
+                        "call_name": name,
+                        "name": name,
+                        "receiver": receiver,
+                        "qualified_hint": f"{receiver}.{name}" if receiver else name,
+                        "start_line": start,
+                        "end_line": end,
+                        "inside_loop_depth": self.loop_depth,
+                        "is_method": receiver is not None,
+                        "is_dynamic": name in _DYNAMIC_CALL_NAMES,
+                        "is_builtin_like": is_builtin_like,
+                        "is_project_candidate": not is_builtin_like,
+                    }
+                )
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return out
+
+
+def _ast_loop_summaries(tree: ast.AST, line_offset: int) -> list[dict]:
+    out: list[dict] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.depth = 0
+            self.parent_stack: list[int] = []
+
+        def _add_loop(self, node: ast.AST, kind: str, bound_hint: str) -> None:
+            idx = len(out)
+            parent = self.parent_stack[-1] if self.parent_stack else None
+            start = line_offset + int(getattr(node, "lineno", 1))
+            end = line_offset + int(getattr(node, "end_lineno", getattr(node, "lineno", 1)))
+            out.append(
+                {
+                    "kind": kind,
+                    "start_line": start,
+                    "end_line": end,
+                    "nesting_depth": self.depth + 1,
+                    "parent_loop_index": parent,
+                    "bound_hint": bound_hint,
+                    "estimated_complexity": "unknown" if bound_hint == "unknown" else "O(n)",
+                    "has_break": any(isinstance(n, ast.Break) for n in ast.walk(node)),
+                    "has_continue": any(isinstance(n, ast.Continue) for n in ast.walk(node)),
+                    "has_return": any(isinstance(n, ast.Return) for n in ast.walk(node)),
+                }
+            )
+            self.depth += 1
+            self.parent_stack.append(idx)
+            self.generic_visit(node)
+            self.parent_stack.pop()
+            self.depth -= 1
+
+        def visit_For(self, node: ast.For) -> None:  # noqa: N802
+            self._add_loop(node, "for", "linear")
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+            self._add_loop(node, "for", "linear")
+
+        def visit_While(self, node: ast.While) -> None:  # noqa: N802
+            self._add_loop(node, "while", "unknown")
+
+    Visitor().visit(tree)
+    return out
+
+
+def _ast_branch_summaries(tree: ast.AST, line_offset: int) -> list[dict]:
+    out: list[dict] = []
+    branch_types = (ast.If, ast.Match, ast.Try, ast.ExceptHandler)
+    for node in ast.walk(tree):
+        if isinstance(node, branch_types):
+            start = line_offset + int(getattr(node, "lineno", 1))
+            end = line_offset + int(getattr(node, "end_lineno", getattr(node, "lineno", 1)))
+            out.append({"kind": type(node).__name__, "start_line": start, "end_line": end})
+    return out
+
+
+def _ast_max_loop_depth(tree: ast.AST) -> tuple[int, int]:
+    loop_types = (ast.For, ast.AsyncFor, ast.While)
+    total = 0
+
+    def walk(node: ast.AST, depth: int) -> int:
+        nonlocal total
+        next_depth = depth
+        if isinstance(node, loop_types):
+            total += 1
+            next_depth += 1
+        best = next_depth
+        for child in ast.iter_child_nodes(node):
+            best = max(best, walk(child, next_depth))
+        return best
+
+    return total, walk(tree, 0)
+
+
+def _apply_python_ast_selection_features(
+    block: CodeBlock,
+    parse_text: str,
+    line_offset: int,
+) -> bool:
+    try:
+        tree = ast.parse(parse_text)
+    except SyntaxError:
+        return False
+
+    calls = _ast_call_summaries(tree, line_offset)
+    loops = _ast_loop_summaries(tree, line_offset)
+    branches = _ast_branch_summaries(tree, line_offset)
+    loop_count, max_depth = _ast_max_loop_depth(tree)
+    block.calls = [
+        c["call_name"]
+        for c in calls
+        if not c.get("is_builtin_like") and c.get("call_name") not in _KEYWORDS
+    ]
+    block.error_state = False
+    block.features = _build_features(block)
+    block.features.loop_count = loop_count
+    block.features.max_loop_depth = max_depth
+    block.features.loop_summaries = loops
+    block.features.call_summaries = calls
+    block.features.branch_summaries = branches
+    block.features.branch_count = len(branches)
+    block.features.container_operations = [
+        {
+            "operation": c.get("call_name"),
+            "operation_type": "method" if c.get("receiver") else "builtin",
+            "receiver": c.get("receiver"),
+            "line": c.get("start_line"),
+            "inside_loop_depth": c.get("inside_loop_depth", 0),
+        }
+        for c in calls
+        if c.get("is_builtin_like")
+    ]
+    block.features.local_symbols = _extract_local_symbols_python(parse_text)
+    block.features.defined_symbols = [block.name]
+    flags: set[str] = set()
+    for loop in loops:
+        if loop.get("bound_hint") == "unknown":
+            flags.add("loop_bound_unknown")
+    for call in calls:
+        if call.get("is_dynamic"):
+            flags.add(f"dynamic_call:{call.get('name')}")
+    block.features.uncertainty_flags = sorted(flags)
+    return True
+
+
 def _top_level_statement_ranges(text: str) -> list[tuple[int, int]]:
     try:
         tree = ast.parse(text)
@@ -701,6 +901,112 @@ def _extract_top_level_executable(
         if call.get("is_dynamic"):
             flags.add(f"dynamic_call:{call.get('name')}")
     block.features.uncertainty_flags = sorted(flags)
+    return block
+
+
+def build_selection_block(
+    file_path: str,
+    language_id: str,
+    source: str,
+    start_line: int,
+    end_line: int,
+) -> CodeBlock:
+    """Создать synthetic CodeBlock для анализа выделенных строк."""
+    raw = source.rstrip("\n")
+    parse_text = textwrap.dedent(raw).strip("\n") or raw
+    synthetic_source = parse_text.encode("utf-8", errors="ignore")
+    source_hash = _sha1(raw)
+    line_offset = start_line - 1
+    stable_id = _make_stable_id(
+        file_path,
+        language_id,
+        "selection",
+        f"<selection:{start_line}-{end_line}>",
+        start_line,
+        end_line,
+        source_hash,
+    )
+
+    try:
+        parser = Parser(get_language(language_id))
+        tree = parser.parse(synthetic_source)
+        root = tree.root_node
+        calls = _extract_calls(root, parse_text, synthetic_source)
+        error_state = _node_has_error(root)
+    except Exception:
+        root = None
+        calls = [m.group(1) for m in _CALL_RE.finditer(parse_text) if m.group(1) not in _KEYWORDS]
+        error_state = True
+
+    block = CodeBlock(
+        block_id=f"{file_path}#selection:{start_line}-{end_line}:{source_hash[:10]}",
+        file_path=file_path,
+        language_id=language_id,
+        kind="selection",
+        name=f"Выделение {start_line}-{end_line}",
+        start_line=start_line,
+        end_line=end_line,
+        source=raw,
+        source_hash=source_hash,
+        calls=calls,
+        stable_id=stable_id,
+        qualified_name=f"Выделение {start_line}-{end_line}",
+        signature=None,
+        normalized_hash=_sha1(_normalized_source(raw)),
+        start_byte=0,
+        end_byte=len(raw.encode("utf-8", errors="ignore")),
+        body_start_byte=0,
+        body_end_byte=len(raw.encode("utf-8", errors="ignore")),
+        body_start_line=start_line,
+        body_end_line=end_line,
+        error_state=error_state,
+        is_container=False,
+    )
+    if language_id == "python" and _apply_python_ast_selection_features(
+        block, parse_text, line_offset
+    ):
+        return block
+
+    if root is not None:
+        loop_count, max_depth = _loop_metrics(root)
+        block.features = _build_features(block)
+        block.features.loop_count = loop_count
+        block.features.max_loop_depth = max_depth
+        block.features.loop_summaries = _extract_loop_summaries(root, synthetic_source)
+        block.features.call_summaries = _extract_call_summaries(root, synthetic_source)
+        block.features.branch_summaries = _extract_branch_summaries(root, synthetic_source)
+        for row in block.features.loop_summaries:
+            if row.get("start_line") is not None:
+                row["start_line"] += line_offset
+            if row.get("end_line") is not None:
+                row["end_line"] += line_offset
+        for row in block.features.call_summaries:
+            if row.get("start_line") is not None:
+                row["start_line"] += line_offset
+            if row.get("end_line") is not None:
+                row["end_line"] += line_offset
+        for row in block.features.branch_summaries:
+            if row.get("start_line") is not None:
+                row["start_line"] += line_offset
+            if row.get("end_line") is not None:
+                row["end_line"] += line_offset
+        block.features.branch_count = len(block.features.branch_summaries)
+        block.features.container_operations = _extract_container_operations(root, synthetic_source)
+        for row in block.features.container_operations:
+            if row.get("line") is not None:
+                row["line"] += line_offset
+        block.features.local_symbols = _extract_local_symbols_python(parse_text)
+        block.features.defined_symbols = [block.name]
+        flags = set(block.features.uncertainty_flags)
+        if block.error_state:
+            flags.add("syntax_error")
+        for call in block.features.call_summaries:
+            if call.get("is_dynamic"):
+                flags.add(f"dynamic_call:{call.get('name')}")
+        block.features.uncertainty_flags = sorted(flags)
+    else:
+        block.features = _build_features(block)
+        block.features.uncertainty_flags = ["syntax_error"]
     return block
 
 

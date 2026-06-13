@@ -152,13 +152,21 @@ class BigOOrchestrator(QObject):
                 bid = block_graph_id(block)
 
                 if cache.try_apply(block):
-                    known_results[bid] = AnalysisResult(
-                        complexity=block.complexity,
-                        reason=block.reason,
-                        reasoning_summary=block.reason,
-                        analyzer_kind="cache",
-                        features=block.features,
-                    )
+                    cached_result = None
+                    applied_result_for = getattr(cache, "applied_result_for", None)
+                    if callable(applied_result_for):
+                        cached_result = applied_result_for(block)
+                    if cached_result is None:
+                        cached_result = AnalysisResult(
+                            complexity=block.complexity,
+                            reason=block.reason,
+                            reasoning_summary=block.reason,
+                            analyzer_kind=block.source_kind or "cache",
+                            features=block.features,
+                        )
+                    else:
+                        cached_result.features = cached_result.features or block.features
+                    known_results[bid] = cached_result
                     continue
 
                 analysis = analyze_block_static(block, dependency_graph, known_results)

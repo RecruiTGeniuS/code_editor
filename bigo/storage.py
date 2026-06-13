@@ -583,6 +583,7 @@ class SQLiteBlockComplexityCache:
         self.graph = graph
         self.model_id = model_id
         self._keys: dict[str, tuple[str, str]] = {}
+        self._applied: dict[str, AnalysisResult] = {}
 
     def _key_for(self, block: CodeBlock) -> tuple[str, str]:
         dep_hash = self.storage.dependency_hash(block, self.graph)
@@ -606,10 +607,20 @@ class SQLiteBlockComplexityCache:
             return False
         block.complexity = result.complexity
         block.reason = result.reason or result.reasoning_summary
-        block.source_kind = "cache"
-        result.analyzer_kind = "cache"
+        original_kind = result.analyzer_kind or "cache"
+        if original_kind == "llm":
+            block.source_kind = "llm"
+        elif original_kind in {"rule", "static"}:
+            block.source_kind = "static"
+        else:
+            block.source_kind = "cache"
         result.dependency_hash = dep_hash
+        result.features = block.features
+        self._applied[block_graph_id(block)] = result
         return True
+
+    def applied_result_for(self, block: CodeBlock) -> AnalysisResult | None:
+        return self._applied.get(block_graph_id(block))
 
     def upsert(self, block: CodeBlock, analysis: AnalysisResult | None = None) -> None:
         if not block.complexity and (analysis is None or not analysis.complexity):

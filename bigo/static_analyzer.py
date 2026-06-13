@@ -28,7 +28,7 @@ _DYNAMIC_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
-RULES_VERSION = "static-v9"
+RULES_VERSION = "static-v10"
 
 
 def _container_skip_result() -> AnalysisResult:

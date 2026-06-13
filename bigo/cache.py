@@ -4,17 +4,18 @@ import json
 import os
 from dataclasses import asdict
 
-from .models import BlockFeatures, CodeBlock
+from .models import AnalysisResult, BlockFeatures, CodeBlock
 
 
 class BlockComplexityCache:
     """Кэш результатов Big-O на уровне блока (JSON файл)."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, cache_path: str):
         self.cache_path = cache_path
         self._data: dict[str, dict] = {}
+        self._applied: dict[str, AnalysisResult] = {}
         self._load()
 
     def _load(self) -> None:
@@ -56,8 +57,24 @@ class BlockComplexityCache:
             return False
         block.complexity = complexity
         block.reason = reason
-        block.source_kind = "cache"
+        source_kind = str(row.get("source_kind") or "cache")
+        if source_kind in {"llm", "ai"}:
+            block.source_kind = "llm"
+        elif source_kind in {"rule", "static"}:
+            block.source_kind = "static"
+        else:
+            block.source_kind = "cache"
+        self._applied[key] = AnalysisResult(
+            complexity=block.complexity,
+            reason=block.reason,
+            reasoning_summary=block.reason,
+            analyzer_kind=block.source_kind if block.source_kind in {"llm", "static"} else "cache",
+            features=block.features,
+        )
         return True
+
+    def applied_result_for(self, block: CodeBlock) -> AnalysisResult | None:
+        return self._applied.get(self.make_key(block))
 
     def upsert(self, block: CodeBlock) -> None:
         if not block.complexity or block.complexity == "unknown":

@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QIODevice,
     QObject,
     QRectF,
+    Signal,
     QTimer,
     Qt,
     QUrl,
@@ -38,11 +39,18 @@ from PySide6.QtWidgets import (
 
 from bigo.block_review import build_block_review
 from bigo.block_utils import analyzable_blocks
+from bigo.ai_fallback import ai_error_result, estimate_with_ai, needs_ai_fallback
 from bigo.dependency_graph import block_graph_id
 from bigo.models import BIG_O_CLASSES, AnalysisResult, CodeBlock
 from bigo.orchestrator import BigOOrchestrator
+from bigo.ollama_client import OllamaBigOClient
 from bigo.overlay_model import complexity_color_class, to_monaco_decorations
-from bigo.project_recommendations import pick_project_recommendation_blocks
+from bigo.project_index import build_selection_block
+from bigo.project_recommendations import (
+    fallback_project_recommendation,
+    pick_project_recommendation_blocks,
+)
+from bigo.static_analyzer import analyze_block_static
 from monaco_widget import CustomMonaco
 from tab_manager import TabManager
 
@@ -83,6 +91,10 @@ class _ProjectReviewResizeFilter(QObject):
         if event.type() == QEvent.Type.Resize:
             self._timer.start()
         return super().eventFilter(obj, event)
+
+
+class _SelectionAnalysisSignals(QObject):
+    finished = Signal(object, object, str, object, object)
 
 
 class BigOController:
@@ -127,6 +139,10 @@ class BigOController:
         self._rows_by_file: dict[str, list[dict]] = {}
         self._blocks_by_id: dict[str, CodeBlock] = {}
         self._results_by_id: dict[str, AnalysisResult] = {}
+        self._selection_blocks_by_id: dict[str, CodeBlock] = {}
+        self._selection_results_by_id: dict[str, AnalysisResult] = {}
+        self._selection_rows_by_file: dict[str, list[dict]] = {}
+        self._pending_selection_ranges_by_file: dict[str, set[tuple[int, int]]] = {}
         self._ollama_available_last: bool | None = None
         self._project_review_text: str = ""
         self._last_project_result = None
@@ -146,9 +162,20 @@ class BigOController:
         self._orchestrator: BigOOrchestrator | None = None
         self._rebuild_orchestrator()
         self._prewarm_ai_model()
+        self._selection_signals = _SelectionAnalysisSignals(parent)
+        self._selection_signals.finished.connect(self._on_selection_analysis_finished)
 
         try:
             self._editor.block_review_requested.connect(self.review_block)
+        except Exception:
+            pass
+        try:
+            self._editor.selection_analysis_requested.connect(
+                self.analyze_selection_payload
+            )
+            self._editor.selection_block_remove_requested.connect(
+                self.remove_selection_block
+            )
         except Exception:
             pass
         if hasattr(self._ai_sidebar_text, "anchorClicked"):
@@ -208,6 +235,10 @@ class BigOController:
         if self._block_reviews_button is not None:
             self._block_reviews_button.setVisible(visible)
 
+    def _set_project_tab_visible(self, visible: bool) -> None:
+        if self._project_review_button is not None:
+            self._project_review_button.setVisible(visible)
+
     def sync_ai_settings(
         self,
         *,
@@ -236,6 +267,65 @@ class BigOController:
                 pass
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _ranges_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+        return max(start_a, start_b) <= min(end_a, end_b)
+
+    def _combined_rows_for_file(self, norm_path: str) -> list[dict]:
+        return [
+            *self._rows_by_file.get(norm_path, []),
+            *self._selection_rows_by_file.get(norm_path, []),
+        ]
+
+    def _range_overlaps_existing(self, norm_path: str, start_line: int, end_line: int) -> bool:
+        for row in self._combined_rows_for_file(norm_path):
+            try:
+                row_start = int(row.get("startLine") or 0)
+                row_end = int(row.get("endLine") or row_start)
+            except (TypeError, ValueError):
+                continue
+            if self._ranges_overlap(start_line, end_line, row_start, row_end):
+                return True
+        pending_ranges = getattr(self, "_pending_selection_ranges_by_file", {})
+        for row_start, row_end in pending_ranges.get(norm_path, set()):
+            if self._ranges_overlap(start_line, end_line, row_start, row_end):
+                return True
+        return False
+
+    def _clear_selection_state(self) -> None:
+        selection_ids = set(self._selection_blocks_by_id)
+        self._selection_blocks_by_id.clear()
+        self._selection_results_by_id.clear()
+        self._selection_rows_by_file.clear()
+        self._pending_selection_ranges_by_file.clear()
+        for bid in selection_ids:
+            self._blocks_by_id.pop(bid, None)
+            self._results_by_id.pop(bid, None)
+            self._block_review_history.pop(bid, None)
+        if selection_ids:
+            self._block_review_order = [
+                bid for bid in self._block_review_order if bid not in selection_ids
+            ]
+            if self._active_block_review_id in selection_ids:
+                self._active_block_review_id = (
+                    self._block_review_order[-1] if self._block_review_order else None
+                )
+
+    def _refresh_current_overlays(self) -> None:
+        if self._tab_manager.active_kind != "text":
+            self._editor.clear_big_o_overlays()
+            return
+        path = self._tab_manager.file_path
+        if not path:
+            self._editor.clear_big_o_overlays()
+            return
+        norm_path = os.path.normcase(os.path.abspath(path))
+        rows = self._combined_rows_for_file(norm_path)
+        if rows:
+            self._editor.apply_big_o_overlays(rows)
+        else:
+            self._editor.clear_big_o_overlays()
 
     def _rebuild_orchestrator(self) -> None:
         old = self._orchestrator
@@ -285,6 +375,7 @@ class BigOController:
         self._enabled = True
         self._analysis_running = True
         self._rows_by_file.clear()
+        self._clear_selection_state()
         self._blocks_by_id.clear()
         self._results_by_id.clear()
         self._last_project_result = None
@@ -293,6 +384,7 @@ class BigOController:
         self._block_review_history.clear()
         self._block_review_order.clear()
         self._active_block_review_id = None
+        self._set_project_tab_visible(True)
         self._set_block_tab_visible(False)
         self._ai_sidebar_text.clear()
         self._show_ai_sidebar()
@@ -311,6 +403,7 @@ class BigOController:
         self._set_ai_status("")
         self._big_o_button.setChecked(False)
         self._rows_by_file.clear()
+        self._clear_selection_state()
         self._blocks_by_id.clear()
         self._results_by_id.clear()
         self._last_project_result = None
@@ -319,17 +412,20 @@ class BigOController:
         self._block_review_history.clear()
         self._block_review_order.clear()
         self._active_block_review_id = None
+        self._set_project_tab_visible(True)
         self._set_block_tab_visible(False)
         if self._orchestrator is not None:
             self._orchestrator.cancel()
         self._editor.clear_big_o_overlays()
 
     def on_active_tab_changed(self) -> None:
-        if not self._enabled:
+        if not self._enabled and not self._selection_rows_by_file:
             return
         self.apply_for_active_tab()
 
     def apply_for_active_tab(self) -> None:
+        if not self._enabled and not self._selection_rows_by_file:
+            return
         if self._tab_manager.active_kind != "text":
             self._editor.clear_big_o_overlays()
             return
@@ -338,10 +434,11 @@ class BigOController:
             self._editor.clear_big_o_overlays()
             return
         norm_path = os.path.normcase(os.path.abspath(path))
-        rows = self._rows_by_file.get(norm_path)
+        rows = self._combined_rows_for_file(norm_path)
         if not rows:
             self._editor.clear_big_o_overlays()
-            self._set_ai_status("Для текущего файла блоки Big-O не найдены")
+            if self._enabled:
+                self._set_ai_status("Для текущего файла блоки Big-O не найдены")
             return
         self._editor.apply_big_o_overlays(rows, self._on_overlay_applied)
 
@@ -437,16 +534,7 @@ class BigOController:
     def _recommendation_text(block: CodeBlock, ai_text: str | None = None) -> str:
         if ai_text:
             return ai_text
-        f = block.features
-        if block.complexity in {"O(2^n)", "O(n!)"} or f.has_recursion:
-            return "Проверить рекурсию и повторные вычисления; рассмотреть memoization или итеративный DP."
-        if block.complexity in {"O(n^3)", "O(n^2)", "O(n^2 log n)"} or f.max_loop_depth >= 2:
-            return "Проверить вложенные циклы; искать возможность вынести инварианты, добавить индекс/хеш-таблицу или снизить вложенность."
-        if f.has_sorting:
-            return "Проверить, нельзя ли сортировать один раз заранее или заменить повторную сортировку структурой данных."
-        if block.complexity in (None, "unknown"):
-            return "Оценка не уверенная: проверить вручную зависимости от входа и стоимость вызываемых функций."
-        return "Проверить горячий путь и убедиться, что оценка соответствует реальным данным."
+        return fallback_project_recommendation(block)
 
     @staticmethod
     def _chart_complexity_label(complexity: str) -> str:
@@ -601,14 +689,15 @@ class BigOController:
         chart_uri = self._complexity_chart_data_uri(counts, chart_width)
 
         rec_items: list[str] = []
+        used_fallback_texts: set[str] = set()
         for block in recommendations:
             bid = block_graph_id(block)
             label = self._block_label(block)
             file_name = os.path.basename(block.file_path)
             complexity = block.complexity or "unknown"
-            recommendation = self._recommendation_text(
-                block,
-                ai_recommendations.get(bid),
+            ai_text = ai_recommendations.get(bid)
+            recommendation = (
+                ai_text if ai_text else fallback_project_recommendation(block, used_fallback_texts)
             )
             rec_items.append(
                 f"""
@@ -855,6 +944,8 @@ class BigOController:
             return
         self._show_ai_sidebar()
         self._showing_project_review = False
+        if not self._project_review_text:
+            self._set_project_tab_visible(False)
         self._set_active_review_tab("blocks")
         if hasattr(self._ai_sidebar_text, "setHtml"):
             self._ai_sidebar_text.setHtml(self._format_block_reviews_html())
@@ -881,7 +972,13 @@ class BigOController:
             except Exception:
                 pass
         self._set_block_tab_visible(False)
-        self.show_project_review_tab()
+        if self._project_review_text:
+            self._set_project_tab_visible(True)
+            self.show_project_review_tab()
+        else:
+            self._set_project_tab_visible(False)
+            self._ai_sidebar_text.clear()
+            self._set_ai_status("")
 
     def _index_blocks(self, result) -> None:
         from bigo.dependency_graph import block_graph_id
@@ -900,6 +997,7 @@ class BigOController:
         self._index_blocks(result)
         self._last_project_result = result
         self._showing_project_review = True
+        self._set_project_tab_visible(True)
         self._project_review_text = self._format_project_review_html(result)
         self._set_active_review_tab("project")
         if hasattr(self._ai_sidebar_text, "setHtml"):
@@ -937,9 +1035,6 @@ class BigOController:
             err = row.get("error", "unknown error")
             self._set_ai_status(f"Ошибка рендера Big-O: {err}")
             return
-        count = int(row.get("decorations", 0) or 0)
-        if not self._showing_project_review:
-            self._set_ai_status(f"Big-O блоки отображены: {count}")
 
     def _rerender_project_review_if_visible(self) -> None:
         if not self._showing_project_review or self._last_project_result is None:
@@ -964,6 +1059,247 @@ class BigOController:
                 min(value, self._ai_sidebar_text.verticalScrollBar().maximum())
             ),
         )
+
+    def _apply_analysis_to_selection_block(
+        self,
+        block: CodeBlock,
+        analysis: AnalysisResult,
+    ) -> None:
+        block.complexity = analysis.complexity or "unknown"
+        block.reason = analysis.reason or analysis.reasoning_summary
+        if analysis.analyzer_kind in {"llm", "llm_error"}:
+            block.source_kind = "llm"
+        elif analysis.analyzer_kind == "cache":
+            block.source_kind = "cache"
+        else:
+            block.source_kind = "static"
+
+    def _finalize_selection_analysis(
+        self,
+        block: CodeBlock,
+        analysis: AnalysisResult,
+        norm_path: str,
+        ollama_available: bool | None,
+    ) -> None:
+        self._ollama_available_last = ollama_available
+        self._apply_analysis_to_selection_block(block, analysis)
+
+        bid = block_graph_id(block)
+        self._selection_blocks_by_id[bid] = block
+        self._selection_results_by_id[bid] = analysis
+        self._blocks_by_id[bid] = block
+        self._results_by_id[bid] = analysis
+
+        rows = to_monaco_decorations([block], {bid: analysis})
+        if not rows:
+            QMessageBox.warning(
+                self._parent,
+                "Big-O Р°РЅР°Р»РёР·",
+                "РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕСЃС‚СЂРѕРёС‚СЊ РїРѕРґСЃРІРµС‚РєСѓ РґР»СЏ РІС‹РґРµР»РµРЅРЅС‹С… СЃС‚СЂРѕРє.",
+            )
+            return
+        rows[0]["removable"] = True
+        self._selection_rows_by_file.setdefault(norm_path, []).append(rows[0])
+        if not self._project_review_text:
+            self._set_project_tab_visible(False)
+        self._set_block_tab_visible(True)
+        self._refresh_current_overlays()
+        self.review_block(bid)
+
+    def _on_selection_analysis_finished(
+        self,
+        block: CodeBlock,
+        analysis: AnalysisResult,
+        norm_path: str,
+        range_key: tuple[int, int],
+        ollama_available: bool | None,
+    ) -> None:
+        pending = self._pending_selection_ranges_by_file.get(norm_path)
+        if pending is None or range_key not in pending:
+            return
+        pending.discard(range_key)
+        if not pending:
+            self._pending_selection_ranges_by_file.pop(norm_path, None)
+        if self._analysis_running:
+            return
+        self._set_ai_status("")
+        self._finalize_selection_analysis(block, analysis, norm_path, ollama_available)
+
+    def analyze_selection_payload(self, payload_json: str) -> None:
+        if self._analysis_running:
+            QMessageBox.information(
+                self._parent,
+                "Big-O анализ",
+                "Дождитесь завершения анализа проекта.",
+            )
+            return
+        if self._tab_manager.active_kind != "text":
+            return
+        file_path = self._tab_manager.file_path
+        if not file_path:
+            QMessageBox.warning(
+                self._parent,
+                "Big-O анализ",
+                "Сначала сохраните файл, чтобы проанализировать выделенные строки.",
+            )
+            return
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError):
+            return
+        try:
+            start_line = int(payload.get("startLine") or 0)
+            end_line = int(payload.get("endLine") or 0)
+        except (TypeError, ValueError):
+            return
+        source = str(payload.get("source") or "")
+        if start_line < 1 or end_line < start_line or not source.strip():
+            return
+
+        norm_path = os.path.normcase(os.path.abspath(file_path))
+        if self._range_overlaps_existing(norm_path, start_line, end_line):
+            message = "Нельзя вызывать оценку на уже оценённой области."
+            self._set_ai_status(message)
+            QMessageBox.warning(self._parent, "Big-O анализ", message)
+            return
+
+        language_id = (
+            str(payload.get("languageId") or "").strip()
+            or self._tab_manager.active_language
+            or "python"
+        )
+        block = build_selection_block(
+            file_path=file_path,
+            language_id=language_id,
+            source=source,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        analysis = analyze_block_static(block)
+        ollama_available = self._ollama_available_last
+        if needs_ai_fallback(analysis):
+            range_key = (start_line, end_line)
+            self._pending_selection_ranges_by_file.setdefault(norm_path, set()).add(range_key)
+            self._set_ai_status("Big-O: РѕС†РµРЅРєР° РІС‹РґРµР»РµРЅРЅС‹С… СЃС‚СЂРѕРє С‡РµСЂРµР· AI")
+
+            def worker() -> None:
+                result = analysis
+                available: bool | None = False
+                try:
+                    client = OllamaBigOClient(
+                        model=self.ai_model,
+                        timeout_s=min(float(self.ai_timeout), 20.0),
+                        max_workers=1,
+                    )
+                    available = client.is_available()
+                    if available:
+                        result = estimate_with_ai(
+                            block,
+                            analysis,
+                            model=self.ai_model,
+                            client=client,
+                            timeout_s=min(float(self.ai_timeout), 20.0),
+                            check_available=False,
+                        )
+                    else:
+                        result = ai_error_result(analysis, "Ollama is unavailable")
+                except Exception as exc:
+                    available = False
+                    result = ai_error_result(analysis, str(exc))
+                self._selection_signals.finished.emit(
+                    block,
+                    result,
+                    norm_path,
+                    range_key,
+                    available,
+                )
+
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        if needs_ai_fallback(analysis):
+            try:
+                client = OllamaBigOClient(
+                    model=self.ai_model,
+                    timeout_s=min(float(self.ai_timeout), 12.0),
+                    max_workers=1,
+                )
+                ollama_available = client.is_available()
+                if ollama_available:
+                    analysis = estimate_with_ai(
+                        block,
+                        analysis,
+                        model=self.ai_model,
+                        client=client,
+                        timeout_s=min(float(self.ai_timeout), 12.0),
+                        check_available=False,
+                    )
+            except Exception:
+                ollama_available = False
+        self._ollama_available_last = ollama_available
+        self._apply_analysis_to_selection_block(block, analysis)
+
+        bid = block_graph_id(block)
+        self._selection_blocks_by_id[bid] = block
+        self._selection_results_by_id[bid] = analysis
+        self._blocks_by_id[bid] = block
+        self._results_by_id[bid] = analysis
+
+        rows = to_monaco_decorations([block], {bid: analysis})
+        if not rows:
+            QMessageBox.warning(
+                self._parent,
+                "Big-O анализ",
+                "Не удалось построить подсветку для выделенных строк.",
+            )
+            return
+        rows[0]["removable"] = True
+        self._selection_rows_by_file.setdefault(norm_path, []).append(rows[0])
+        if not self._project_review_text:
+            self._set_project_tab_visible(False)
+        self._set_block_tab_visible(True)
+        self._refresh_current_overlays()
+        self.review_block(bid)
+
+    def remove_selection_block(self, block_id: str) -> None:
+        block = self._selection_blocks_by_id.pop(block_id, None)
+        if block is None:
+            return
+        self._selection_results_by_id.pop(block_id, None)
+        self._blocks_by_id.pop(block_id, None)
+        self._results_by_id.pop(block_id, None)
+        norm_path = os.path.normcase(os.path.abspath(block.file_path))
+        rows = [
+            row
+            for row in self._selection_rows_by_file.get(norm_path, [])
+            if row.get("blockId") != block_id
+        ]
+        if rows:
+            self._selection_rows_by_file[norm_path] = rows
+        else:
+            self._selection_rows_by_file.pop(norm_path, None)
+
+        self._block_review_history.pop(block_id, None)
+        self._block_review_order = [
+            bid for bid in self._block_review_order if bid != block_id
+        ]
+        if self._active_block_review_id == block_id:
+            self._active_block_review_id = (
+                self._block_review_order[-1] if self._block_review_order else None
+            )
+        self._refresh_current_overlays()
+
+        if self._block_review_order:
+            self._set_block_tab_visible(True)
+            self.show_block_reviews_tab()
+        else:
+            self._set_block_tab_visible(False)
+            if self._project_review_text:
+                self._set_project_tab_visible(True)
+                self.show_project_review_tab()
+            else:
+                self._set_project_tab_visible(False)
+                self._ai_sidebar_text.clear()
+                self._set_ai_status("")
 
     def _on_sidebar_link_clicked(self, url: QUrl) -> None:
         if url.scheme() != "bigo":
